@@ -1,0 +1,7 @@
+{
+  "name": "CPA — Centralized Pocket Account",
+  "description": "AI-powered centralized money-management and shared-wallet platform for groups, friends, and teams.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
