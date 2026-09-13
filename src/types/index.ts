@@ -71,12 +71,17 @@ export interface UserProfile {
   fullName: string;
   phone?: string;
   phoneVerified?: boolean;
+  phoneVerifiedAt?: string;
   avatarUrl?: string;
   bio?: string;
   role?: AuthRole;
   roleTag?: string;
   createdAt: string;
 }
+
+export type OtpChannel = 'sms' | 'whatsapp';
+
+export type OtpDeliveryStatus = 'REQUESTED' | 'SENT' | 'DELIVERED' | 'FAILED' | 'EXPIRED' | 'VERIFIED' | 'BLOCKED';
 
 export interface PayoutDestination {
   id: string;

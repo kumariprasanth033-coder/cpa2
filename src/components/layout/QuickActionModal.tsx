@@ -1023,6 +1023,18 @@ export const QuickActionModal: React.FC = () => {
           {/* WITHDRAW MODAL */}
           {quickActionModal === 'withdraw' && (
             <form onSubmit={handleWithdraw} className="space-y-4 text-xs">
+              {!currentUser?.phoneVerified && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-amber-300 flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-semibold text-xs text-white">Mobile Verification Required</p>
+                    <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                      Financial compliance requires a verified mobile phone number before submitting treasury disbursements. Please verify your mobile phone in your Profile.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                 <div className="flex items-center justify-between text-[11px] text-slate-400">
                   <span>Available Treasury Balance</span>
@@ -1115,10 +1127,14 @@ export const QuickActionModal: React.FC = () => {
 
               <button
                 type="submit"
-                disabled={isSubmittingWithdraw}
+                disabled={isSubmittingWithdraw || !currentUser?.phoneVerified}
                 className="w-full rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 py-3 font-bold text-white hover:from-amber-500 hover:to-orange-500 transition-all cursor-pointer shadow-lg shadow-amber-600/20 disabled:opacity-50"
               >
-                {isSubmittingWithdraw ? 'Submitting Request...' : 'Submit Withdrawal Request'}
+                {isSubmittingWithdraw
+                  ? 'Submitting Request...'
+                  : !currentUser?.phoneVerified
+                  ? 'Phone Verification Required'
+                  : 'Submit Withdrawal Request'}
               </button>
             </form>
           )}

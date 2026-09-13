@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   User,
@@ -17,6 +17,9 @@ import {
   ArrowUpRight,
   ShieldCheck,
   Check,
+  MessageSquare,
+  Clock,
+  Send,
 } from 'lucide-react';
 
 export const ProfileView: React.FC = () => {
@@ -33,10 +36,27 @@ export const ProfileView: React.FC = () => {
   // Phone Verification State
   const [phoneNumber, setPhoneNumber] = useState(currentUser.phone || '');
   const [otpCode, setOtpCode] = useState('');
+  const [otpChannel, setOtpChannel] = useState<'sms' | 'whatsapp'>('sms');
   const [otpSent, setOtpSent] = useState(false);
   const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
+  const [maskedRecipient, setMaskedRecipient] = useState<string>('');
   const [phoneFeedback, setPhoneFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  useEffect(() => {
+    if (cooldownRemaining <= 0) return;
+    const timer = setInterval(() => {
+      setCooldownRemaining((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldownRemaining]);
 
   // Payout Destination Form State
   const [showAddPayout, setShowAddPayout] = useState(false);
@@ -60,6 +80,7 @@ export const ProfileView: React.FC = () => {
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (cooldownRemaining > 0) return;
     if (!phoneNumber.trim()) {
       setPhoneFeedback({ type: 'error', message: 'Please enter a valid 10-digit Indian mobile number.' });
       return;
@@ -67,14 +88,21 @@ export const ProfileView: React.FC = () => {
     setIsSendingOtp(true);
     setPhoneFeedback(null);
     try {
-      const res = await sendPhoneOtp(phoneNumber.trim());
+      const res = await sendPhoneOtp(phoneNumber.trim(), otpChannel);
       if (res.success) {
         setOtpSent(true);
+        setCooldownRemaining(60);
+        if (res.maskedPhone) setMaskedRecipient(res.maskedPhone);
         setPhoneFeedback({
           type: 'success',
-          message: res.message || 'Verification code dispatched to your phone.',
+          message: res.message
+            ? `${res.message} via ${otpChannel === 'whatsapp' ? 'WhatsApp' : 'SMS'}`
+            : `Verification code sent via ${otpChannel === 'whatsapp' ? 'WhatsApp' : 'SMS'}.`,
         });
       } else {
+        if (res.cooldownRemainingSec) {
+          setCooldownRemaining(res.cooldownRemainingSec);
+        }
         setPhoneFeedback({ type: 'error', message: res.error || 'Failed to send OTP.' });
       }
     } finally {
@@ -85,7 +113,7 @@ export const ProfileView: React.FC = () => {
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!otpCode.trim() || otpCode.length !== 6) {
-      setPhoneFeedback({ type: 'error', message: 'Enter the 6-digit verification OTP.' });
+      setPhoneFeedback({ type: 'error', message: 'Enter the complete 6-digit verification code.' });
       return;
     }
     setIsVerifyingOtp(true);
@@ -95,9 +123,10 @@ export const ProfileView: React.FC = () => {
       if (res.success) {
         setOtpSent(false);
         setOtpCode('');
+        setCooldownRemaining(0);
         setPhoneFeedback({
           type: 'success',
-          message: 'Phone number verified successfully! Multi-sig payouts unlocked.',
+          message: 'Phone number verified successfully! Treasury disbursements and multi-sig withdrawals are now active.',
         });
       } else {
         setPhoneFeedback({ type: 'error', message: res.error || 'Invalid verification code.' });
@@ -227,22 +256,27 @@ export const ProfileView: React.FC = () => {
         </div>
       </div>
 
-      {/* SECTION: PHONE VERIFICATION (OTP) */}
+      {/* SECTION: PHONE VERIFICATION (REAL SMS & WHATSAPP) */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-white font-bold text-sm">
             <Smartphone className="h-4 w-4 text-emerald-400" />
-            <span>Mobile Phone Verification (2FA Security Rail)</span>
+            <span>Mobile Phone Verification (SMS & WhatsApp 2FA)</span>
           </div>
-          {currentUser.phoneVerified && (
-            <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1">
-              <Check className="w-3 h-3" />
-              {currentUser.phone}
+          {currentUser.phoneVerified ? (
+            <span className="text-xs font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-full flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              Verified ({currentUser.phone})
+            </span>
+          ) : (
+            <span className="text-xs font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-full flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+              Verification Required
             </span>
           )}
         </div>
         <p className="text-xs text-slate-400">
-          Phone verification is required by financial regulations prior to approving treasury disbursements or receiving group funds.
+          Real OTP verification via SMS or WhatsApp is required before initiating disbursements or receiving settlement payouts.
         </p>
 
         {phoneFeedback && (
@@ -262,6 +296,35 @@ export const ProfileView: React.FC = () => {
           </div>
         )}
 
+        {/* Verification Channel Selector */}
+        <div className="flex items-center gap-2 pt-1">
+          <span className="text-xs font-medium text-slate-400">Delivery Channel:</span>
+          <button
+            type="button"
+            onClick={() => setOtpChannel('sms')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              otpChannel === 'sms'
+                ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700/60'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>SMS (Text Message)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setOtpChannel('whatsapp')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              otpChannel === 'whatsapp'
+                ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700/60'
+            }`}
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>WhatsApp</span>
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-800/80">
           <form onSubmit={handleSendOtp} className="space-y-2">
             <label className="block text-xs font-semibold text-slate-300">Indian Mobile Number (+91)</label>
@@ -275,14 +338,23 @@ export const ProfileView: React.FC = () => {
               />
               <button
                 type="submit"
-                disabled={isSendingOtp}
-                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-semibold text-xs transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50"
+                disabled={isSendingOtp || cooldownRemaining > 0}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-semibold text-xs transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50 flex items-center gap-1.5"
               >
-                {isSendingOtp ? 'Sending...' : otpSent ? 'Resend OTP' : 'Send Code'}
+                {cooldownRemaining > 0 && <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" />}
+                <span>
+                  {isSendingOtp
+                    ? 'Dispatching...'
+                    : cooldownRemaining > 0
+                    ? `Resend in ${cooldownRemaining}s`
+                    : otpSent
+                    ? 'Resend OTP'
+                    : `Send via ${otpChannel === 'whatsapp' ? 'WhatsApp' : 'SMS'}`}
+                </span>
               </button>
             </div>
             <p className="text-[10px] text-slate-500">
-              Standard 10-digit Indian format (e.g. 9876543210).
+              Standard 10-digit Indian format (+91). Real carrier dispatch via Twilio.
             </p>
           </form>
 
@@ -300,18 +372,19 @@ export const ProfileView: React.FC = () => {
               />
               <button
                 type="submit"
-                disabled={isVerifyingOtp || !otpCode}
+                disabled={isVerifyingOtp || !otpCode || otpCode.trim().length !== 6}
                 className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50"
               >
                 {isVerifyingOtp ? 'Verifying...' : 'Verify OTP'}
               </button>
             </div>
             <p className="text-[10px] text-slate-500">
-              Test mode active: OTP is dispatched and also logged to terminal.
+              Verification codes are valid for 5 minutes. Enter code received on your device.
             </p>
           </form>
         </div>
       </div>
+
 
       {/* SECTION: PAYOUT DESTINATIONS (UPI & BANK ACCOUNTS) */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-4">

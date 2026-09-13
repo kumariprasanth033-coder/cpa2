@@ -343,6 +343,7 @@ db.exec(`
 
 // Safe incremental column additions for existing production database
 try { db.exec('ALTER TABLE users ADD COLUMN phone_verified INTEGER DEFAULT 0;'); } catch (_) {}
+try { db.exec('ALTER TABLE wallets ADD COLUMN balance INTEGER DEFAULT 0;'); } catch (_) {}
 try { db.exec('ALTER TABLE transactions ADD COLUMN idempotency_key TEXT;'); } catch (_) {}
 try { db.exec("ALTER TABLE approval_requests ADD COLUMN payout_status TEXT DEFAULT 'PENDING_APPROVAL';"); } catch (_) {}
 try { db.exec('ALTER TABLE approval_requests ADD COLUMN payout_provider_reference TEXT;'); } catch (_) {}
@@ -412,10 +413,31 @@ try {
 
     INSERT OR IGNORE INTO payment_gateway_configs (id, provider, mode, updated_at)
     VALUES ('default', 'RAZORPAY', 'TEST', datetime('now'));
+
+    CREATE TABLE IF NOT EXISTS otp_verifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      phone_number TEXT NOT NULL,
+      otp_hash TEXT NOT NULL,
+      purpose TEXT NOT NULL DEFAULT 'PHONE_VERIFICATION',
+      channel TEXT NOT NULL DEFAULT 'SMS',
+      expires_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      verified_at TEXT,
+      created_at TEXT NOT NULL,
+      provider_message_id TEXT,
+      delivery_status TEXT NOT NULL DEFAULT 'REQUESTED'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_otp_verifications_phone ON otp_verifications(phone_number, created_at);
+    CREATE INDEX IF NOT EXISTS idx_otp_verifications_user ON otp_verifications(user_id, created_at);
   `);
 } catch (err) {
-  console.error('Database migration error for payment tables:', err);
+  console.error('Database migration error for tables:', err);
 }
+
+try { db.exec('ALTER TABLE users ADD COLUMN phone_verified_at TEXT;'); } catch (_) {}
 
 
 // Cryptographic Password Hashing Helpers (Scrypt)
@@ -718,4 +740,130 @@ export function updatePaymentOrderStatus(params: {
   );
   return getPaymentOrderById(params.id);
 }
+
+// ==========================================
+// OTP VERIFICATIONS REPOSITORY (Sections 3, 4, 5)
+// ==========================================
+
+export interface OtpVerificationRow {
+  id: string;
+  user_id?: string | null;
+  phone_number: string;
+  otp_hash: string;
+  purpose: string;
+  channel: 'SMS' | 'WHATSAPP';
+  expires_at: string;
+  attempt_count: number;
+  max_attempts: number;
+  verified_at?: string | null;
+  created_at: string;
+  provider_message_id?: string | null;
+  delivery_status: 'REQUESTED' | 'SENT' | 'DELIVERED' | 'FAILED' | 'EXPIRED' | 'VERIFIED' | 'BLOCKED';
+}
+
+export function createOtpVerificationRecord(params: {
+  userId?: string | null;
+  phoneNumber: string;
+  otpHash: string;
+  purpose?: string;
+  channel?: 'SMS' | 'WHATSAPP';
+  expiresAt: string;
+  providerMessageId?: string | null;
+  deliveryStatus?: 'REQUESTED' | 'SENT' | 'DELIVERED' | 'FAILED';
+}): OtpVerificationRow {
+  const id = `otp_${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  const purpose = params.purpose || 'PHONE_VERIFICATION';
+  const channel = params.channel || 'SMS';
+  const deliveryStatus = params.deliveryStatus || 'SENT';
+
+  db.prepare(`
+    INSERT INTO otp_verifications (
+      id, user_id, phone_number, otp_hash, purpose, channel,
+      expires_at, attempt_count, max_attempts, created_at,
+      provider_message_id, delivery_status
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 5, ?, ?, ?)
+  `).run(
+    id,
+    params.userId || null,
+    params.phoneNumber,
+    params.otpHash,
+    purpose,
+    channel,
+    params.expiresAt,
+    now,
+    params.providerMessageId || null,
+    deliveryStatus
+  );
+
+  return db.prepare('SELECT * FROM otp_verifications WHERE id = ?').get(id) as unknown as OtpVerificationRow;
+}
+
+export function getActiveOtpVerification(phoneNumber: string): OtpVerificationRow | undefined {
+  return db.prepare(`
+    SELECT * FROM otp_verifications
+    WHERE phone_number = ? AND verified_at IS NULL
+    ORDER BY created_at DESC LIMIT 1
+  `).get(phoneNumber) as unknown as OtpVerificationRow | undefined;
+}
+
+export function updateOtpDeliveryStatus(id: string, status: string, messageId?: string | null) {
+  if (messageId) {
+    db.prepare('UPDATE otp_verifications SET delivery_status = ?, provider_message_id = ? WHERE id = ?').run(status, messageId, id);
+  } else {
+    db.prepare('UPDATE otp_verifications SET delivery_status = ? WHERE id = ?').run(status, id);
+  }
+}
+
+export function incrementOtpAttemptCount(id: string): number {
+  db.prepare('UPDATE otp_verifications SET attempt_count = attempt_count + 1 WHERE id = ?').run(id);
+  const row = db.prepare('SELECT attempt_count, max_attempts FROM otp_verifications WHERE id = ?').get(id) as any;
+  if (row && row.attempt_count >= row.max_attempts) {
+    db.prepare("UPDATE otp_verifications SET delivery_status = 'BLOCKED' WHERE id = ?").run(id);
+  }
+  return row?.attempt_count || 0;
+}
+
+export function markOtpAsVerified(id: string, verifiedAt: string) {
+  db.prepare("UPDATE otp_verifications SET verified_at = ?, delivery_status = 'VERIFIED' WHERE id = ?").run(verifiedAt, id);
+}
+
+export function checkOtpRateLimits(phoneNumber: string): { allowed: boolean; cooldownRemainingSec?: number; error?: string } {
+  // 1. Check cooldown: 60 seconds since last OTP request
+  const lastReq = db.prepare(`
+    SELECT created_at FROM otp_verifications
+    WHERE phone_number = ?
+    ORDER BY created_at DESC LIMIT 1
+  `).get(phoneNumber) as any;
+
+  if (lastReq) {
+    const elapsedSec = Math.floor((Date.now() - new Date(lastReq.created_at).getTime()) / 1000);
+    if (elapsedSec < 60) {
+      const cooldownRemainingSec = 60 - elapsedSec;
+      return {
+        allowed: false,
+        cooldownRemainingSec,
+        error: `Please wait ${cooldownRemainingSec} seconds before requesting another OTP.`,
+      };
+    }
+  }
+
+  // 2. Maximum 3 OTP requests within 15 minutes (Section 6)
+  const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const recentCountRow = db.prepare(`
+    SELECT COUNT(*) as cnt FROM otp_verifications
+    WHERE phone_number = ? AND created_at > ?
+  `).get(phoneNumber, fifteenMinsAgo) as any;
+
+  if (recentCountRow && recentCountRow.cnt >= 3) {
+    return {
+      allowed: false,
+      error: 'Too many OTP requests for this phone number. Please wait 15 minutes before trying again.',
+    };
+  }
+
+  return { allowed: true };
+}
+
 

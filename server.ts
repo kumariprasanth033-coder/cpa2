@@ -18,7 +18,14 @@ import {
   getPaymentOrderByGatewayOrderId,
   getPaymentOrderById,
   updatePaymentOrderStatus,
+  createOtpVerificationRecord,
+  getActiveOtpVerification,
+  updateOtpDeliveryStatus,
+  incrementOtpAttemptCount,
+  markOtpAsVerified,
+  checkOtpRateLimits,
 } from './server/db.js';
+import { getTwilioConfig, sendTwilioOtpMessage } from './server/twilio.js';
 
 dotenv.config();
 
@@ -117,7 +124,7 @@ setInterval(() => {
 // ==========================================
 // INDIAN MOBILE VALIDATION & NORMALIZATION HELPER
 // ==========================================
-function normalizeIndianMobile(input?: string | null): { valid: boolean; normalized?: string; error?: string } {
+function normalizeIndianMobile(input?: string | null): { valid: boolean; normalized?: string; masked?: string; error?: string } {
   if (!input || !input.trim()) {
     return { valid: true, normalized: undefined };
   }
@@ -138,9 +145,13 @@ function normalizeIndianMobile(input?: string | null): { valid: boolean; normali
     };
   }
 
+  const raw10 = match[1];
+  const masked = `+91 ${raw10.slice(0, 2)}••••••${raw10.slice(-2)}`;
+
   return {
     valid: true,
-    normalized: `+91${match[1]}`,
+    normalized: `+91${raw10}`,
+    masked,
   };
 }
 
@@ -154,6 +165,7 @@ interface AuthenticatedRequest extends Request {
     fullName: string;
     phone?: string;
     phoneVerified?: boolean;
+    phoneVerifiedAt?: string;
     avatarUrl?: string;
     bio?: string;
     role: 'SYSTEM_ADMIN' | 'MEMBER';
@@ -172,7 +184,7 @@ function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextF
 
   try {
     const sessionStmt = db.prepare(`
-      SELECT s.token, s.expires_at, u.id, u.email, u.full_name, u.phone, u.phone_verified, u.avatar_url, u.bio, u.role, u.created_at
+      SELECT s.token, s.expires_at, u.id, u.email, u.full_name, u.phone, u.phone_verified, u.phone_verified_at, u.avatar_url, u.bio, u.role, u.created_at
       FROM sessions s
       JOIN users u ON s.user_id = u.id
       WHERE s.token = ?
@@ -194,6 +206,7 @@ function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextF
       fullName: session.full_name,
       phone: session.phone || undefined,
       phoneVerified: Boolean(session.phone_verified),
+      phoneVerifiedAt: session.phone_verified_at || undefined,
       avatarUrl: session.avatar_url || undefined,
       bio: session.bio || undefined,
       role: session.role as 'SYSTEM_ADMIN' | 'MEMBER',
@@ -205,6 +218,39 @@ function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextF
     console.error('Auth verification error:', err);
     return res.status(500).json({ success: false, error: 'Failed to authenticate session' });
   }
+}
+
+function optionalAuthToken(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
+  if (!token) return next();
+
+  try {
+    const sessionStmt = db.prepare(`
+      SELECT s.token, s.expires_at, u.id, u.email, u.full_name, u.phone, u.phone_verified, u.phone_verified_at, u.avatar_url, u.bio, u.role, u.created_at
+      FROM sessions s
+      JOIN users u ON s.user_id = u.id
+      WHERE s.token = ?
+    `);
+    const session = sessionStmt.get(token) as any;
+
+    if (session && new Date(session.expires_at) >= new Date()) {
+      req.user = {
+        id: session.id,
+        email: session.email,
+        fullName: session.full_name,
+        phone: session.phone || undefined,
+        phoneVerified: Boolean(session.phone_verified),
+        phoneVerifiedAt: session.phone_verified_at || undefined,
+        avatarUrl: session.avatar_url || undefined,
+        bio: session.bio || undefined,
+        role: session.role as 'SYSTEM_ADMIN' | 'MEMBER',
+        createdAt: session.created_at,
+      };
+      req.token = token;
+    }
+  } catch (_) {}
+  next();
 }
 
 function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -584,144 +630,216 @@ app.post('/api/auth/update-profile', authenticateToken, (req: AuthenticatedReque
 });
 
 // ==========================================
-// REAL PHONE OTP VERIFICATION ENDPOINTS (Section 4, 23)
+// REAL PHONE OTP VERIFICATION ENDPOINTS (Sections 4, 5, 6, 7, 9, 10)
 // ==========================================
-app.post('/api/auth/phone/send-otp', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
+
+// Check OTP Provider Status (SMS & WhatsApp)
+app.get(['/api/auth/otp/status', '/api/auth/phone/status'], (_req: Request, res: Response) => {
+  const twilio = getTwilioConfig();
+  return res.json({
+    success: true,
+    smsConfigured: twilio.isSmsConfigured,
+    whatsappConfigured: twilio.isWhatsAppConfigured,
+    senderPhone: twilio.isSmsConfigured ? twilio.phoneNumber : null,
+  });
+});
+
+// Send Real OTP (SMS or WhatsApp via Twilio)
+app.post(['/api/auth/send-otp', '/api/auth/phone/send-otp'], optionalAuthToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { phone } = req.body;
-    const targetPhone = phone || req.user!.phone;
+    const { phone, channel = 'sms' } = req.body;
+    const targetPhone = phone || req.user?.phone;
+    const requestedChannel = String(channel).toLowerCase() === 'whatsapp' ? 'whatsapp' : 'sms';
 
     if (!targetPhone) {
       return res.status(400).json({ success: false, error: 'Mobile number is required to send verification code.' });
     }
 
     const phoneCheck = normalizeIndianMobile(targetPhone);
-    if (!phoneCheck.valid) {
-      return res.status(400).json({ success: false, error: phoneCheck.error });
+    if (!phoneCheck.valid || !phoneCheck.normalized) {
+      return res.status(400).json({ success: false, error: phoneCheck.error || 'Invalid Indian mobile number.' });
     }
-    const normalizedPhone = phoneCheck.normalized!;
+    const normalizedPhone = phoneCheck.normalized;
 
-    // Check duplicate phone belonging to other user
-    const existingOther = db.prepare('SELECT id FROM users WHERE phone = ? AND id != ?').get(normalizedPhone, req.user!.id);
-    if (existingOther) {
-      return res.status(409).json({ success: false, error: 'This phone number is already registered to another account.' });
+    // Check duplicate phone belonging to other verified user
+    if (req.user?.id) {
+      const existingOther = db.prepare('SELECT id FROM users WHERE phone = ? AND id != ? AND phone_verified = 1').get(normalizedPhone, req.user.id);
+      if (existingOther) {
+        return res.status(409).json({ success: false, error: 'This phone number is already registered to another account.' });
+      }
     }
 
-    // Check if SMS provider is configured
-    const isSmsConfigured = Boolean(process.env.SMS_PROVIDER_API_KEY || process.env.TWILIO_AUTH_TOKEN);
-    if (!isSmsConfigured) {
+    // Check Twilio provider configuration upfront
+    const twilioConfig = getTwilioConfig();
+    if (requestedChannel === 'whatsapp' && !twilioConfig.isWhatsAppConfigured) {
       return res.status(503).json({
         success: false,
-        status: 'REQUIRES CONFIGURATION',
-        error: 'SMS service requires configuration. SMS_PROVIDER_API_KEY or TWILIO_AUTH_TOKEN is not configured.',
+        code: 'REQUIRES_CONFIGURATION',
+        error: 'WhatsApp verification requires configuration.',
+      });
+    }
+    if (requestedChannel === 'sms' && !twilioConfig.isSmsConfigured) {
+      return res.status(503).json({
+        success: false,
+        code: 'REQUIRES_CONFIGURATION',
+        error: 'SMS service requires configuration.',
       });
     }
 
-    // Rate limit: check repeated OTP requests within 60 seconds
-    const lastRequest = db.prepare(`
-      SELECT created_at FROM phone_verifications
-      WHERE user_id = ? AND phone = ?
-      ORDER BY created_at DESC LIMIT 1
-    `).get(req.user!.id, normalizedPhone) as any;
-
-    if (lastRequest && (Date.now() - new Date(lastRequest.created_at).getTime() < 60000)) {
-      return res.status(429).json({ success: false, error: 'Please wait 60 seconds before requesting another OTP.' });
+    // Rate limits (60s cooldown & maximum 3 requests per 15 min)
+    const rateLimit = checkOtpRateLimits(normalizedPhone);
+    if (!rateLimit.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: rateLimit.error || 'Please wait before requesting another OTP.',
+        cooldownRemainingSec: rateLimit.cooldownRemainingSec,
+      });
     }
 
-    // Generate 6-digit cryptographic OTP
-    const otp = crypto.randomInt(100000, 999999).toString();
+    // Generate cryptographically secure 6-digit OTP
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const { salt, hash } = hashPassword(otp);
+    const otpHash = `${salt}:${hash}`;
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 min expiry
-    const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO phone_verifications (id, user_id, phone, otp_hash, attempts, expires_at, created_at)
-      VALUES (?, ?, ?, ?, 0, ?, ?)
-    `).run(`otp_${crypto.randomUUID()}`, req.user!.id, normalizedPhone, `${salt}:${hash}`, expiresAt, now);
+    // Dispatch real message through Twilio
+    const twilioResult = await sendTwilioOtpMessage({
+      to: normalizedPhone,
+      otp,
+      channel: requestedChannel,
+    });
+
+    if (!twilioResult.success) {
+      return res.status(twilioResult.code === 'REQUIRES_CONFIGURATION' ? 503 : 400).json({
+        success: false,
+        code: twilioResult.code || 'TWILIO_DISPATCH_FAILED',
+        error: twilioResult.error || 'Unable to send OTP. Please check your phone number and try again.',
+      });
+    }
+
+    // ONLY store OTP record if Twilio accepted the message
+    createOtpVerificationRecord({
+      userId: req.user?.id || null,
+      phoneNumber: normalizedPhone,
+      otpHash,
+      purpose: 'PHONE_VERIFICATION',
+      channel: requestedChannel.toUpperCase() as 'SMS' | 'WHATSAPP',
+      expiresAt,
+      providerMessageId: twilioResult.messageId || null,
+      deliveryStatus: (twilioResult.status as any) || 'SENT',
+    });
+
+    // Also update phone on user record if authenticated
+    if (req.user?.id) {
+      db.prepare('UPDATE users SET phone = ?, updated_at = ? WHERE id = ?').run(
+        normalizedPhone,
+        new Date().toISOString(),
+        req.user.id
+      );
+    }
 
     return res.json({
       success: true,
-      message: `OTP has been dispatched to ${normalizedPhone.slice(0, 5)}••••${normalizedPhone.slice(-2)}.`,
+      channel: requestedChannel,
+      message: 'OTP sent successfully',
+      maskedPhone: phoneCheck.masked,
+      deliveryStatus: twilioResult.status || 'SENT',
+      expiresInSeconds: 300,
+      cooldownSeconds: 60,
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: 'Failed to send OTP.' });
+    console.error('Send OTP Handler Error:', err);
+    return res.status(500).json({ success: false, error: 'Unable to send OTP. Please try again.' });
   }
 });
 
-app.post('/api/auth/phone/verify-otp', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
+// Verify Real OTP
+app.post(['/api/auth/verify-otp', '/api/auth/phone/verify-otp'], optionalAuthToken, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { phone, otp } = req.body;
-    const targetPhone = phone || req.user!.phone;
+    const targetPhone = phone || req.user?.phone;
 
     if (!targetPhone || !otp) {
-      return res.status(400).json({ success: false, error: 'Phone number and 6-digit OTP are required.' });
+      return res.status(400).json({ success: false, error: 'Phone number and 6-digit OTP code are required.' });
     }
 
     const phoneCheck = normalizeIndianMobile(targetPhone);
-    if (!phoneCheck.valid) {
-      return res.status(400).json({ success: false, error: phoneCheck.error });
+    if (!phoneCheck.valid || !phoneCheck.normalized) {
+      return res.status(400).json({ success: false, error: phoneCheck.error || 'Invalid Indian mobile number.' });
     }
-    const normalizedPhone = phoneCheck.normalized!;
+    const normalizedPhone = phoneCheck.normalized;
 
-    const isSmsConfigured = Boolean(process.env.SMS_PROVIDER_API_KEY || process.env.TWILIO_AUTH_TOKEN);
-    if (!isSmsConfigured) {
-      return res.status(503).json({
-        success: false,
-        status: 'REQUIRES CONFIGURATION',
-        error: 'SMS service requires configuration. SMS_PROVIDER_API_KEY or TWILIO_AUTH_TOKEN is not configured.',
-      });
-    }
-
-    const verification = db.prepare(`
-      SELECT * FROM phone_verifications
-      WHERE user_id = ? AND phone = ? AND verified_at IS NULL
-      ORDER BY created_at DESC LIMIT 1
-    `).get(req.user!.id, normalizedPhone) as any;
-
+    const verification = getActiveOtpVerification(normalizedPhone);
     if (!verification) {
       return res.status(404).json({ success: false, error: 'No active OTP request found. Please request a new verification code.' });
     }
 
+    // Check expiry (5 minutes)
     if (new Date(verification.expires_at) < new Date()) {
+      updateOtpDeliveryStatus(verification.id, 'EXPIRED');
       return res.status(400).json({ success: false, error: 'OTP has expired. Please request a new verification code.' });
     }
 
-    if (verification.attempts >= 5) {
+    // Check attempt limit
+    if (verification.attempt_count >= verification.max_attempts) {
+      updateOtpDeliveryStatus(verification.id, 'BLOCKED');
       return res.status(429).json({ success: false, error: 'Too many incorrect attempts. Please request a fresh OTP.' });
     }
 
-    // Increment attempt counter
-    db.prepare('UPDATE phone_verifications SET attempts = attempts + 1 WHERE id = ?').run(verification.id);
+    // Increment attempt count
+    incrementOtpAttemptCount(verification.id);
 
+    // Cryptographically verify submitted OTP
     const [salt, expectedHash] = (verification.otp_hash || '').split(':');
-    const isValid = salt && expectedHash ? verifyPassword(otp.trim(), salt, expectedHash) : false;
+    const isValid = salt && expectedHash ? verifyPassword(String(otp).trim(), salt, expectedHash) : false;
 
     if (!isValid) {
       return res.status(400).json({ success: false, error: 'Invalid verification code.' });
     }
 
-    const now = new Date().toISOString();
-    db.prepare('UPDATE phone_verifications SET verified_at = ? WHERE id = ?').run(now, verification.id);
-    db.prepare('UPDATE users SET phone = ?, phone_verified = 1, updated_at = ? WHERE id = ?').run(normalizedPhone, now, req.user!.id);
+    const verifiedNow = new Date().toISOString();
+    markOtpAsVerified(verification.id, verifiedNow);
+
+    // Update user record if authenticated or match user by phone
+    const userId = req.user?.id || verification.user_id;
+    if (userId) {
+      db.prepare('UPDATE users SET phone = ?, phone_verified = 1, phone_verified_at = ?, updated_at = ? WHERE id = ?').run(
+        normalizedPhone,
+        verifiedNow,
+        verifiedNow,
+        userId
+      );
+    } else {
+      // Find user with this phone
+      db.prepare("UPDATE users SET phone_verified = 1, phone_verified_at = ?, updated_at = ? WHERE phone = ?").run(
+        verifiedNow,
+        verifiedNow,
+        normalizedPhone
+      );
+    }
 
     recordAuditLog({
-      actorId: req.user!.id,
-      actorName: req.user!.fullName,
+      actorId: userId || 'anonymous',
+      actorName: req.user?.fullName || 'Account Holder',
       action: 'PHONE_VERIFIED',
       entityType: 'USER',
-      entityId: req.user!.id,
-      metadata: { phone: normalizedPhone },
+      entityId: userId || normalizedPhone,
+      metadata: { phone: normalizedPhone, channel: verification.channel, verifiedAt: verifiedNow },
     });
 
     return res.json({
       success: true,
       phoneVerified: true,
+      phone: normalizedPhone,
       message: 'Mobile number verified successfully.',
+      verifiedAt: verifiedNow,
     });
   } catch (err: any) {
+    console.error('Verify OTP Handler Error:', err);
     return res.status(500).json({ success: false, error: 'Failed to verify OTP.' });
   }
 });
+
 
 // ==========================================
 // PAYOUT DESTINATIONS (Section 18)
@@ -3048,6 +3166,16 @@ app.post(['/api/approvals/request-withdrawal', '/api/withdrawals/request'], auth
       });
     }
 
+    // Security rule (Section 14): Verified phone required before requesting withdrawals/disbursements
+    const userRecord = db.prepare('SELECT phone_verified, phone FROM users WHERE id = ?').get(user.id) as any;
+    if (!userRecord || !userRecord.phone_verified) {
+      return res.status(403).json({
+        success: false,
+        code: 'PHONE_NOT_VERIFIED',
+        error: 'Phone verification is required before initiating disbursements or withdrawals. Please verify your mobile phone in your Profile.',
+      });
+    }
+
     // Verify user is group member
     const membership = db.prepare("SELECT role FROM group_members WHERE group_id = ? AND user_id = ? AND status = 'ACTIVE'")
       .get(groupId, user.id) as any;
@@ -4036,7 +4164,7 @@ function validateStartupConfiguration() {
     cleanCredential(process.env.RAZORPAY_LIVE_KEY_ID) ||
     (cleanCredential(process.env.RAZORPAY_KEY_ID)?.startsWith('rzp_live_') ? cleanCredential(process.env.RAZORPAY_KEY_ID) : null);
   const webhookSecret = cleanCredential(process.env.RAZORPAY_WEBHOOK_SECRET) || cleanCredential(process.env.WEBHOOK_SECRET);
-  const twilio = cleanCredential(process.env.TWILIO_AUTH_TOKEN) || cleanCredential(process.env.SMS_PROVIDER_API_KEY);
+  const twilio = getTwilioConfig();
   const gemini = Boolean(process.env.GEMINI_API_KEY);
 
   console.log('==================================================');
@@ -4048,7 +4176,8 @@ function validateStartupConfiguration() {
   console.log(` Razorpay Test Credentials: ${testKey ? 'CONFIGURED' : 'MISSING'}`);
   console.log(` Razorpay Live Credentials: ${liveKey ? 'CONFIGURED' : 'MISSING'}`);
   console.log(` Webhook Secret:            ${webhookSecret ? 'CONFIGURED' : 'MISSING'}`);
-  console.log(` Twilio / SMS:              ${twilio ? 'CONFIGURED' : 'SIMULATED'}`);
+  console.log(` Twilio / SMS:              ${twilio.isSmsConfigured ? 'CONFIGURED' : 'REQUIRES CONFIGURATION'}`);
+  console.log(` Twilio / WhatsApp:         ${twilio.isWhatsAppConfigured ? 'CONFIGURED' : 'REQUIRES CONFIGURATION'}`);
   console.log(` Gemini AI:                 ${gemini ? 'CONFIGURED' : 'MISSING'}`);
   console.log('==================================================');
 }

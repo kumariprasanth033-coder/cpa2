@@ -128,8 +128,23 @@ interface AppContextType {
     ifscCode?: string;
     bankName?: string;
   }) => Promise<{ success: boolean; error?: string }>;
-  sendPhoneOtp: (phone?: string) => Promise<{ success: boolean; message?: string; error?: string; status?: string }>;
-  verifyPhoneOtp: (otp: string, phone?: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  sendPhoneOtp: (
+    phone?: string,
+    channel?: 'sms' | 'whatsapp'
+  ) => Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+    status?: string;
+    code?: string;
+    maskedPhone?: string;
+    cooldownRemainingSec?: number;
+    deliveryStatus?: string;
+  }>;
+  verifyPhoneOtp: (
+    otp: string,
+    phone?: string
+  ) => Promise<{ success: boolean; message?: string; error?: string; phoneVerified?: boolean }>;
 
   // Real-Time Messaging & Notifications
   chatMessages: ChatMessage[];
@@ -889,54 +904,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Send Phone OTP
-  const sendPhoneOtp = async (phone?: string): Promise<{ success: boolean; message?: string; error?: string; status?: string }> => {
+  // Send Phone OTP (SMS or WhatsApp via Twilio)
+  const sendPhoneOtp = async (
+    phone?: string,
+    channel: 'sms' | 'whatsapp' = 'sms'
+  ): Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+    status?: string;
+    code?: string;
+    maskedPhone?: string;
+    cooldownRemainingSec?: number;
+    deliveryStatus?: string;
+  }> => {
     const token = localStorage.getItem('cpa_auth_token') || authToken;
-    if (!token) return { success: false, error: 'Authentication required' };
+    if (!token) return { success: false, error: 'Authentication required. Please sign in.' };
     try {
-      const res = await safeApiRequest<{ success: boolean; message?: string; error?: string; status?: string }>(
-        '/api/auth/phone/send-otp',
+      const res = await safeApiRequest<{
+        success: boolean;
+        message?: string;
+        error?: string;
+        status?: string;
+        code?: string;
+        maskedPhone?: string;
+        cooldownRemainingSec?: number;
+        deliveryStatus?: string;
+      }>(
+        '/api/auth/send-otp',
         {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ phone }),
+          body: JSON.stringify({ phone, channel }),
         }
       );
       if (!res.ok || !res.data?.success) {
-        return { success: false, error: res.error || res.data?.error || 'Failed to send OTP' };
+        return {
+          success: false,
+          error: res.error || res.data?.error || 'Failed to send verification code.',
+          code: res.data?.code,
+          cooldownRemainingSec: res.data?.cooldownRemainingSec,
+        };
       }
-      return { success: true, message: res.data.message, status: res.data.status };
+      return {
+        success: true,
+        message: res.data.message,
+        status: res.data.status,
+        maskedPhone: res.data.maskedPhone,
+        deliveryStatus: res.data.deliveryStatus,
+      };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Network error' };
+      return { success: false, error: err.message || 'Network error occurred while requesting OTP.' };
     }
   };
 
   // Verify Phone OTP
-  const verifyPhoneOtp = async (otp: string, phone?: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+  const verifyPhoneOtp = async (
+    otp: string,
+    phone?: string
+  ): Promise<{ success: boolean; message?: string; error?: string; phoneVerified?: boolean }> => {
     const token = localStorage.getItem('cpa_auth_token') || authToken;
-    if (!token) return { success: false, error: 'Authentication required' };
+    if (!token) return { success: false, error: 'Authentication required. Please sign in.' };
     try {
-      const res = await safeApiRequest<{ success: boolean; message?: string; error?: string }>(
-        '/api/auth/phone/verify-otp',
+      const res = await safeApiRequest<{ success: boolean; message?: string; error?: string; phoneVerified?: boolean; phone?: string }>(
+        '/api/auth/verify-otp',
         {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ otp, phone }),
+          body: JSON.stringify({ otp: otp.trim(), phone }),
         }
       );
       if (!res.ok || !res.data?.success) {
-        return { success: false, error: res.error || res.data?.error || 'Verification failed' };
+        return { success: false, error: res.error || res.data?.error || 'Verification failed. Please check the code.' };
       }
+
+      // Immediately reflect verified status in memory
+      if (currentUser) {
+        setCurrentUser(prev => prev ? {
+          ...prev,
+          phoneVerified: true,
+          phone: res.data?.phone || phone || prev.phone,
+        } : null);
+      }
+
       await refreshUserData();
-      return { success: true, message: res.data.message };
+      return { success: true, message: res.data.message || 'Phone number verified successfully.', phoneVerified: true };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Network error' };
+      return { success: false, error: err.message || 'Network error occurred during verification.' };
     }
   };
 
