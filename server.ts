@@ -75,6 +75,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
   }
 
+  // Normalize duplicate /api/api/ path prefixes
+  if (req.url && req.url.startsWith('/api/api/')) {
+    req.url = req.url.replace(/^\/api\/api\//, '/api/');
+  }
+
   // Rewrite legacy or prefixed /api/cpa/auth/* routes directly to canonical /api/auth/*
   if (req.url && req.url.startsWith('/api/cpa/auth/')) {
     req.url = req.url.replace('/api/cpa/auth/', '/api/auth/');
@@ -1207,7 +1212,34 @@ app.post('/api/groups/create', authenticateToken, (req: AuthenticatedRequest, re
       metadata: { cpaNumber, name: name.trim(), currency, targetAmountPaise },
     });
 
+    // Create initial system message in group chat
+    const welcomeMsgId = `msg_${crypto.randomUUID()}`;
+    db.prepare(`
+      INSERT INTO messages (id, group_id, sender_id, sender_name, sender_role, type, text, created_at)
+      VALUES (?, ?, ?, ?, 'OWNER', 'TEXT', ?, ?)
+    `).run(
+      welcomeMsgId,
+      groupId,
+      user.id,
+      user.fullName,
+      `Welcome to ${name.trim()} Centralized Pocket Account! Group chat and multi-signature governance active.`,
+      now
+    );
+
     broadcastEvent('GROUP_CREATED', { groupId, cpaNumber, name: name.trim(), ownerName: user.fullName });
+    broadcastEvent('MESSAGE_CREATED', {
+      groupId,
+      message: {
+        id: welcomeMsgId,
+        groupId,
+        senderId: user.id,
+        senderName: user.fullName,
+        role: 'OWNER',
+        type: 'TEXT',
+        text: `Welcome to ${name.trim()} Centralized Pocket Account! Group chat and multi-signature governance active.`,
+        timestamp: now,
+      },
+    });
 
     return res.status(201).json({
       success: true,
@@ -1252,7 +1284,7 @@ app.post('/api/groups/create', authenticateToken, (req: AuthenticatedRequest, re
 app.post('/api/groups/:id/join-request', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
     const groupId = req.params.id;
-    const { pin, note } = req.body;
+    const { pin, note, invToken } = req.body;
     const user = req.user!;
 
     const group = db.prepare(`
@@ -1299,6 +1331,20 @@ app.post('/api/groups/:id/join-request', authenticateToken, (req: AuthenticatedR
       INSERT INTO join_requests (id, group_id, user_id, applicant_name, applicant_email, note, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)
     `).run(requestId, group.id, user.id, user.fullName, user.email, note?.trim() || null, now);
+
+    // Also insert into group_join_requests
+    let invitationId: string | null = null;
+    if (invToken) {
+      const invRow = (db.prepare("SELECT id FROM group_invitations WHERE secure_token = ?").get(invToken)
+        || db.prepare("SELECT id FROM invitations WHERE secure_token = ?").get(invToken)) as any;
+      if (invRow) invitationId = invRow.id;
+    }
+    try {
+      db.prepare(`
+        INSERT INTO group_join_requests (id, group_id, applicant_user_id, invitation_id, status, created_at)
+        VALUES (?, ?, ?, ?, 'PENDING', ?)
+      `).run(requestId, group.id, user.id, invitationId, now);
+    } catch (_) {}
 
     // Notify group owner
     createNotification({
@@ -1364,12 +1410,47 @@ app.post('/api/groups/:id/join-requests/:requestId/review', authenticateToken, (
       db.prepare("UPDATE join_requests SET status = 'APPROVED', reviewer_id = ?, reviewed_at = ? WHERE id = ?")
         .run(user.id, now, requestId);
 
+      try {
+        db.prepare("UPDATE group_join_requests SET status = 'APPROVED', reviewed_by = ?, reviewed_at = ? WHERE id = ? OR (group_id = ? AND applicant_user_id = ?)")
+          .run(user.id, now, requestId, groupId, joinReq.user_id);
+      } catch (_) {}
+
       // Add to group_members
       db.prepare(`
         INSERT INTO group_members (id, group_id, user_id, role, joined_at, status)
         VALUES (?, ?, ?, 'MEMBER', ?, 'ACTIVE')
         ON CONFLICT(group_id, user_id) DO UPDATE SET status = 'ACTIVE', role = 'MEMBER'
       `).run(`mem_${crypto.randomUUID()}`, groupId, joinReq.user_id, now);
+
+      // Mark associated group invitations as JOINED
+      try {
+        db.prepare(`
+          UPDATE group_invitations
+          SET status = 'JOINED', accepted_at = ?
+          WHERE group_id = ? AND (invitee_user_id = ? OR invitee_phone = (SELECT phone FROM users WHERE id = ?))
+        `).run(now, groupId, joinReq.user_id, joinReq.user_id);
+      } catch (_) {}
+      try {
+        db.prepare(`
+          UPDATE invitations
+          SET status = 'ACCEPTED', updated_at = ?
+          WHERE group_id = ? AND (invitee_user_id = ? OR invitee_phone = (SELECT phone FROM users WHERE id = ?))
+        `).run(now, groupId, joinReq.user_id, joinReq.user_id);
+      } catch (_) {}
+
+      // Insert system chat message in group chat
+      const joinMsgId = `msg_${crypto.randomUUID()}`;
+      db.prepare(`
+        INSERT INTO messages (id, group_id, sender_id, sender_name, sender_role, type, text, created_at)
+        VALUES (?, ?, ?, ?, 'SYSTEM', 'TEXT', ?, ?)
+      `).run(
+        joinMsgId,
+        groupId,
+        joinReq.user_id,
+        joinReq.applicant_name,
+        `${joinReq.applicant_name} joined the group.`,
+        now
+      );
 
       createNotification({
         userId: joinReq.user_id,
@@ -1379,9 +1460,27 @@ app.post('/api/groups/:id/join-requests/:requestId/review', authenticateToken, (
       });
 
       broadcastEvent('MEMBER_JOINED', { groupId, userId: joinReq.user_id, name: joinReq.applicant_name });
+      broadcastEvent('MESSAGE_CREATED', {
+        groupId,
+        message: {
+          id: joinMsgId,
+          groupId,
+          senderId: joinReq.user_id,
+          senderName: joinReq.applicant_name,
+          role: 'MEMBER',
+          type: 'TEXT',
+          text: `${joinReq.applicant_name} joined the group.`,
+          timestamp: now,
+        },
+      });
     } else {
       db.prepare("UPDATE join_requests SET status = 'REJECTED', reviewer_id = ?, reviewed_at = ? WHERE id = ?")
         .run(user.id, now, requestId);
+
+      try {
+        db.prepare("UPDATE group_join_requests SET status = 'REJECTED', reviewed_by = ?, reviewed_at = ? WHERE id = ? OR (group_id = ? AND applicant_user_id = ?)")
+          .run(user.id, now, requestId, groupId, joinReq.user_id);
+      } catch (_) {}
 
       createNotification({
         userId: joinReq.user_id,
@@ -1389,6 +1488,8 @@ app.post('/api/groups/:id/join-requests/:requestId/review', authenticateToken, (
         title: 'Join Request Declined',
         message: `Your request to join the group was not approved at this time.`,
       });
+
+      broadcastEvent('JOIN_REQUEST_REJECTED', { groupId, requestId, applicantId: joinReq.user_id });
     }
 
     recordAuditLog({
@@ -1421,16 +1522,85 @@ app.get('/api/groups/:id/join-requests', authenticateToken, (req: AuthenticatedR
     }
 
     const requests = db.prepare(`
-      SELECT id, group_id as groupId, user_id as applicantId, applicant_name as applicantName,
-             applicant_email as applicantEmail, note as reason, created_at as timestamp, status
-      FROM join_requests
-      WHERE group_id = ? AND status = 'PENDING'
-      ORDER BY created_at DESC
-    `).all(groupId);
+      SELECT jr.id, jr.group_id as groupId, jr.user_id as applicantId, jr.applicant_name as applicantName,
+             jr.applicant_email as applicantEmail, u.phone as applicantPhone, jr.note as reason,
+             jr.created_at as timestamp, jr.status
+      FROM join_requests jr
+      JOIN users u ON jr.user_id = u.id
+      WHERE jr.group_id = ? AND jr.status = 'PENDING'
+      ORDER BY jr.created_at DESC
+    `).all(groupId) as any[];
 
-    return res.json({ success: true, requests });
+    const sanitized = requests.map((r) => ({
+      ...r,
+      maskedPhone: normalizeIndianMobile(r.applicantPhone).masked || r.applicantPhone || 'Not provided',
+    }));
+
+    return res.json({ success: true, requests: sanitized });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: 'Failed to fetch join requests.' });
+  }
+});
+
+// ==========================================
+// SEARCH REGISTERED CPA USERS TO INVITE
+// ==========================================
+app.get('/api/users/search', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const q = ((req.query.q as string) || '').trim();
+    const groupId = (req.query.groupId as string) || '';
+
+    if (!q || q.length < 2) {
+      return res.json({ success: true, users: [] });
+    }
+
+    const phoneCheck = normalizeIndianMobile(q);
+    const normalizedSearchPhone = phoneCheck.valid ? phoneCheck.normalized : null;
+    const searchPattern = `%${q}%`;
+
+    let users: any[] = [];
+    if (normalizedSearchPhone) {
+      users = db.prepare(`
+        SELECT id, full_name as fullName, email, phone, avatar_url as avatarUrl
+        FROM users
+        WHERE phone = ? OR phone LIKE ? OR LOWER(full_name) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?)
+        LIMIT 10
+      `).all(normalizedSearchPhone, searchPattern, searchPattern, searchPattern);
+    } else {
+      users = db.prepare(`
+        SELECT id, full_name as fullName, email, phone, avatar_url as avatarUrl
+        FROM users
+        WHERE LOWER(full_name) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?) OR phone LIKE ?
+        LIMIT 10
+      `).all(searchPattern, searchPattern, searchPattern);
+    }
+
+    const annotated = users.map((u) => {
+      let isMember = false;
+      let hasPendingInvite = false;
+      if (groupId) {
+        const mem = db.prepare("SELECT id FROM group_members WHERE group_id = ? AND user_id = ? AND status = 'ACTIVE'").get(groupId, u.id);
+        isMember = Boolean(mem);
+        const inv = db.prepare("SELECT id FROM group_invitations WHERE group_id = ? AND (invitee_user_id = ? OR invitee_phone = ?) AND status IN ('PENDING', 'INVITE_SENT')").get(groupId, u.id, u.phone)
+          || db.prepare("SELECT id FROM invitations WHERE group_id = ? AND (invitee_user_id = ? OR invitee_phone = ?) AND status IN ('PENDING', 'OPENED')").get(groupId, u.id, u.phone);
+        hasPendingInvite = Boolean(inv);
+      }
+      return {
+        id: u.id,
+        fullName: u.fullName,
+        email: u.email,
+        phone: u.phone,
+        maskedPhone: normalizeIndianMobile(u.phone).masked || u.phone,
+        avatarUrl: u.avatarUrl,
+        isMember,
+        hasPendingInvite,
+      };
+    });
+
+    return res.json({ success: true, users: annotated });
+  } catch (err: any) {
+    console.error('User search error:', err);
+    return res.status(500).json({ success: false, error: 'User search failed.' });
   }
 });
 
@@ -1488,39 +1658,114 @@ app.post('/api/groups/:id/invitations', authenticateToken, (req: AuthenticatedRe
       }
     }
 
+    // Check if an invitation is already pending for this phone in this group
+    const existingInvite = db.prepare("SELECT * FROM group_invitations WHERE group_id = ? AND invitee_phone = ? AND status IN ('PENDING', 'INVITE_SENT')")
+      .get(groupId, normalizedPhone) as any
+      || db.prepare("SELECT * FROM invitations WHERE group_id = ? AND invitee_phone = ? AND status IN ('PENDING', 'OPENED')")
+      .get(groupId, normalizedPhone) as any;
+
+    const origin = getPublicAppUrl(req);
+
+    if (existingInvite) {
+      const joinUrl = `${origin}/join/${group.secure_join_token}?inv=${existingInvite.secure_token}`;
+      const whatsappText = `You are invited to join ${group.name} on CPA.\n\nPurpose: ${group.purpose}\nCPA ID: ${group.cpa_number}\n\nJoin securely:\n${joinUrl}\n\nYour membership requires approval from the group leader.`;
+      const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappText)}`;
+
+      return res.json({
+        success: true,
+        invitation: {
+          id: existingInvite.id,
+          groupId,
+          groupName: group.name,
+          cpaNumber: group.cpa_number,
+          purpose: group.purpose,
+          inviteeName: existingInvite.invitee_name || friendName?.trim() || null,
+          inviteePhone: existingInvite.invitee_phone,
+          inviteeEmail: existingInvite.invitee_email || email?.trim() || null,
+          isExistingUser: Boolean(existingUser),
+          existingUserId: existingUser ? existingUser.id : null,
+          secureToken: existingInvite.secure_token,
+          status: existingInvite.status,
+          joinUrl,
+          whatsappText,
+          whatsappUrl,
+          expiresAt: existingInvite.expires_at,
+          createdAt: existingInvite.created_at,
+        },
+        message: `Active invitation already exists for ${friendName || normalizedPhone}.`,
+      });
+    }
+
     const invitationId = `inv_${crypto.randomUUID()}`;
     const secureToken = `invtok_${crypto.randomBytes(16).toString('hex')}`;
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
 
-    db.prepare(`
-      INSERT INTO invitations (
-        id, group_id, inviter_id, invitee_name, invitee_phone, invitee_email,
-        invitee_user_id, secure_token, status, expires_at, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
-    `).run(
-      invitationId,
-      groupId,
-      user.id,
-      friendName?.trim() || null,
-      normalizedPhone,
-      email?.trim() || null,
-      existingUser ? existingUser.id : null,
-      secureToken,
-      expiresAt,
-      now,
-      now
-    );
+    // Insert into group_invitations
+    try {
+      db.prepare(`
+        INSERT INTO group_invitations (
+          id, group_id, inviter_user_id, invitee_name, invitee_phone, invitee_email,
+          invitee_user_id, secure_token, status, expires_at, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INVITE_SENT', ?, ?)
+      `).run(
+        invitationId,
+        groupId,
+        user.id,
+        friendName?.trim() || null,
+        normalizedPhone,
+        email?.trim() || null,
+        existingUser ? existingUser.id : null,
+        secureToken,
+        expiresAt,
+        now
+      );
+    } catch (_) {}
 
-    // Build real production join URL using host or public URL
-    const host = req.get('host') || 'localhost:3000';
-    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-    const origin = `${proto}://${host}`;
+    // Also insert into invitations for backwards compatibility
+    try {
+      db.prepare(`
+        INSERT INTO invitations (
+          id, group_id, inviter_id, invitee_name, invitee_phone, invitee_email,
+          invitee_user_id, secure_token, status, expires_at, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+      `).run(
+        invitationId,
+        groupId,
+        user.id,
+        friendName?.trim() || null,
+        normalizedPhone,
+        email?.trim() || null,
+        existingUser ? existingUser.id : null,
+        secureToken,
+        expiresAt,
+        now,
+        now
+      );
+    } catch (_) {}
+
+    // Build real production join URL
     const joinUrl = `${origin}/join/${group.secure_join_token}?inv=${secureToken}`;
-
     const whatsappText = `You are invited to join ${group.name} on CPA.\n\nPurpose: ${group.purpose}\nCPA ID: ${group.cpa_number}\n\nJoin securely:\n${joinUrl}\n\nYour membership requires approval from the group leader.`;
     const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappText)}`;
+
+    // Create system message in group chat
+    const targetFriendLabel = friendName?.trim() || phoneCheck.masked || normalizedPhone;
+    const invMsgId = `msg_${crypto.randomUUID()}`;
+    db.prepare(`
+      INSERT INTO messages (id, group_id, sender_id, sender_name, sender_role, type, text, created_at)
+      VALUES (?, ?, ?, ?, ?, 'TEXT', ?, ?)
+    `).run(
+      invMsgId,
+      groupId,
+      user.id,
+      user.fullName,
+      membership.role,
+      `An invitation was sent to ${targetFriendLabel}.`,
+      now
+    );
 
     // If invitee is existing user, trigger notification
     if (existingUser) {
@@ -1548,6 +1793,21 @@ app.post('/api/groups/:id/invitations', authenticateToken, (req: AuthenticatedRe
       invitationId,
       inviterName: user.fullName,
       inviteePhone: normalizedPhone,
+      inviteeName: friendName?.trim() || null,
+    });
+
+    broadcastEvent('MESSAGE_CREATED', {
+      groupId,
+      message: {
+        id: invMsgId,
+        groupId,
+        senderId: user.id,
+        senderName: user.fullName,
+        role: membership.role,
+        type: 'TEXT',
+        text: `An invitation was sent to ${targetFriendLabel}.`,
+        timestamp: now,
+      },
     });
 
     return res.status(201).json({
@@ -1564,14 +1824,14 @@ app.post('/api/groups/:id/invitations', authenticateToken, (req: AuthenticatedRe
         isExistingUser: Boolean(existingUser),
         existingUserId: existingUser ? existingUser.id : null,
         secureToken,
-        status: 'PENDING',
+        status: 'INVITE_SENT',
         joinUrl,
         whatsappText,
         whatsappUrl,
         expiresAt,
         createdAt: now,
       },
-      message: `Invitation created for ${friendName || normalizedPhone}.`,
+      message: `Invitation sent to ${friendName || normalizedPhone}.`,
     });
   } catch (err: any) {
     console.error('Create invitation error:', err);
@@ -1592,16 +1852,35 @@ app.get('/api/groups/:id/invitations', authenticateToken, (req: AuthenticatedReq
       return res.status(403).json({ success: false, error: 'Access denied.' });
     }
 
-    const invitations = db.prepare(`
-      SELECT i.id, i.group_id as groupId, i.inviter_id as inviterId, u.full_name as inviterName,
-             i.invitee_name as inviteeName, i.invitee_phone as inviteePhone, i.invitee_email as inviteeEmail,
-             i.invitee_user_id as inviteeUserId, i.secure_token as secureToken, i.status,
-             i.expires_at as expiresAt, i.created_at as createdAt, i.updated_at as updatedAt
-      FROM invitations i
-      JOIN users u ON i.inviter_id = u.id
-      WHERE i.group_id = ?
-      ORDER BY i.created_at DESC
-    `).all(groupId);
+    let invitations: any[] = [];
+    try {
+      invitations = db.prepare(`
+        SELECT i.id, i.group_id as groupId, i.inviter_user_id as inviterId, u.full_name as inviterName,
+               i.invitee_name as inviteeName, i.invitee_phone as inviteePhone, i.invitee_email as inviteeEmail,
+               i.invitee_user_id as inviteeUserId, i.secure_token as secureToken, i.status,
+               i.expires_at as expiresAt, i.created_at as createdAt, i.accepted_at as acceptedAt,
+               i.cancelled_at as cancelledAt
+        FROM group_invitations i
+        JOIN users u ON i.inviter_user_id = u.id
+        WHERE i.group_id = ?
+        ORDER BY i.created_at DESC
+      `).all(groupId);
+    } catch (_) {}
+
+    if (invitations.length === 0) {
+      try {
+        invitations = db.prepare(`
+          SELECT i.id, i.group_id as groupId, i.inviter_id as inviterId, u.full_name as inviterName,
+                 i.invitee_name as inviteeName, i.invitee_phone as inviteePhone, i.invitee_email as inviteeEmail,
+                 i.invitee_user_id as inviteeUserId, i.secure_token as secureToken, i.status,
+                 i.expires_at as expiresAt, i.created_at as createdAt, i.updated_at as updatedAt
+          FROM invitations i
+          JOIN users u ON i.inviter_id = u.id
+          WHERE i.group_id = ?
+          ORDER BY i.created_at DESC
+        `).all(groupId);
+      } catch (_) {}
+    }
 
     return res.json({ success: true, invitations });
   } catch (err: any) {
@@ -1609,33 +1888,96 @@ app.get('/api/groups/:id/invitations', authenticateToken, (req: AuthenticatedReq
   }
 });
 
+// Cancel Invitation
+app.post('/api/groups/:id/invitations/:invitationId/cancel', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const groupId = req.params.id;
+    const invitationId = req.params.invitationId;
+    const user = req.user!;
+
+    const membership = db.prepare("SELECT role FROM group_members WHERE group_id = ? AND user_id = ? AND status = 'ACTIVE'")
+      .get(groupId, user.id) as any;
+
+    if (!membership && user.role !== 'SYSTEM_ADMIN') {
+      return res.status(403).json({ success: false, error: 'Access denied.' });
+    }
+
+    const now = new Date().toISOString();
+    try {
+      db.prepare("UPDATE group_invitations SET status = 'CANCELLED', cancelled_at = ? WHERE id = ? AND group_id = ?").run(now, invitationId, groupId);
+    } catch (_) {}
+    try {
+      db.prepare("UPDATE invitations SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND group_id = ?").run(now, invitationId, groupId);
+    } catch (_) {}
+
+    recordAuditLog({
+      cpaId: groupId,
+      actorId: user.id,
+      actorName: user.fullName,
+      action: 'INVITATION_CANCELLED',
+      entityType: 'INVITATION',
+      entityId: invitationId,
+    });
+
+    broadcastEvent('INVITATION_CANCELLED', { groupId, invitationId });
+
+    return res.json({ success: true, message: 'Invitation cancelled.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: 'Failed to cancel invitation.' });
+  }
+});
+
 // Resolve invitation token (when friend opens link)
 app.get('/api/invitations/:token', (req: Request, res: Response) => {
   try {
     const token = req.params.token;
-    const invitation = db.prepare(`
-      SELECT i.*, g.id as group_id, g.group_code, g.secure_join_token, c.cpa_number, c.name as group_name, c.purpose, c.description,
+    let invitation = db.prepare(`
+      SELECT i.id, i.group_id, i.inviter_user_id as inviter_id, i.invitee_name, i.invitee_phone,
+             i.invitee_email, i.invitee_user_id, i.secure_token, i.status, i.expires_at,
+             g.group_code, g.secure_join_token, c.cpa_number, c.name as group_name, c.purpose, c.description,
              u.full_name as inviter_name
-      FROM invitations i
+      FROM group_invitations i
       JOIN groups g ON i.group_id = g.id
       JOIN cpas c ON g.cpa_id = c.id
-      JOIN users u ON i.inviter_id = u.id
+      JOIN users u ON i.inviter_user_id = u.id
       WHERE i.secure_token = ?
     `).get(token) as any;
+
+    if (!invitation) {
+      invitation = db.prepare(`
+        SELECT i.*, g.id as group_id, g.group_code, g.secure_join_token, c.cpa_number, c.name as group_name, c.purpose, c.description,
+               u.full_name as inviter_name
+        FROM invitations i
+        JOIN groups g ON i.group_id = g.id
+        JOIN cpas c ON g.cpa_id = c.id
+        JOIN users u ON i.inviter_id = u.id
+        WHERE i.secure_token = ?
+      `).get(token) as any;
+    }
 
     if (!invitation) {
       return res.status(404).json({ success: false, error: 'Invitation not found or invalid.' });
     }
 
     if (new Date(invitation.expires_at) < new Date()) {
-      db.prepare("UPDATE invitations SET status = 'EXPIRED', updated_at = ? WHERE id = ?").run(new Date().toISOString(), invitation.id);
+      try {
+        db.prepare("UPDATE group_invitations SET status = 'EXPIRED' WHERE id = ?").run(invitation.id);
+      } catch (_) {}
+      try {
+        db.prepare("UPDATE invitations SET status = 'EXPIRED', updated_at = ? WHERE id = ?").run(new Date().toISOString(), invitation.id);
+      } catch (_) {}
       return res.status(410).json({ success: false, error: 'This invitation has expired.' });
     }
 
-    // If status is PENDING, mark as OPENED
-    if (invitation.status === 'PENDING') {
+    // If status is PENDING or INVITE_SENT, mark as OPENED
+    if (invitation.status === 'PENDING' || invitation.status === 'INVITE_SENT') {
       const now = new Date().toISOString();
-      db.prepare("UPDATE invitations SET status = 'OPENED', updated_at = ? WHERE id = ?").run(now, invitation.id);
+      try {
+        db.prepare("UPDATE group_invitations SET status = 'OPENED' WHERE id = ?").run(invitation.id);
+      } catch (_) {}
+      try {
+        db.prepare("UPDATE invitations SET status = 'OPENED', updated_at = ? WHERE id = ?").run(now, invitation.id);
+      } catch (_) {}
       invitation.status = 'OPENED';
     }
 
@@ -2741,7 +3083,7 @@ app.post('/api/payments/webhook', (req: Request, res: Response) => {
 app.get('/api/admin/system-config', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
     const gateway = getResolvedPaymentGateway();
-    const appUrl = process.env.APP_URL || 'http://localhost:3000';
+    const appUrl = getPublicAppUrl(req);
     const hasTwilio = Boolean(
       cleanCredential(process.env.TWILIO_AUTH_TOKEN) || cleanCredential(process.env.SMS_PROVIDER_API_KEY)
     );
@@ -2804,7 +3146,7 @@ app.get('/api/admin/system-config', authenticateToken, (req: AuthenticatedReques
 app.get('/api/admin/payment-config', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
     const dbConfig = getPaymentGatewayConfig();
-    const appUrl = process.env.APP_URL || 'http://localhost:3000';
+    const appUrl = getPublicAppUrl(req);
     const gateway = getResolvedPaymentGateway();
 
     // Mask secrets for display

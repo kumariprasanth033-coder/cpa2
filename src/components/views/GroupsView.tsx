@@ -43,6 +43,7 @@ export const GroupsView: React.FC = () => {
     approveJoinRequest,
     rejectJoinRequest,
     fetchGroupInvitations,
+    cancelGroupInvitation,
     setQuickActionModal,
     auditLogs,
     aiInsights,
@@ -57,11 +58,26 @@ export const GroupsView: React.FC = () => {
   const [joinQrDataUrl, setJoinQrDataUrl] = useState<string>('');
   const [contribQrDataUrl, setContribQrDataUrl] = useState<string>('');
   const [groupInvitations, setGroupInvitations] = useState<GroupInvitation[]>([]);
+  const [cancellingInviteId, setCancellingInviteId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeGroup) return;
     fetchGroupInvitations(activeGroup.id).then((invs) => setGroupInvitations(invs));
   }, [activeGroup?.id, fetchGroupInvitations]);
+
+  const handleCancelInvite = async (invitationId: string) => {
+    if (!activeGroup) return;
+    setCancellingInviteId(invitationId);
+    try {
+      const res = await cancelGroupInvitation(activeGroup.id, invitationId);
+      if (res.success) {
+        const updated = await fetchGroupInvitations(activeGroup.id);
+        setGroupInvitations(updated);
+      }
+    } finally {
+      setCancellingInviteId(null);
+    }
+  };
 
   useEffect(() => {
     if (!activeGroup) return;
@@ -156,36 +172,37 @@ export const GroupsView: React.FC = () => {
             <p className="text-xs text-slate-300 mt-1 max-w-2xl">{activeGroup.description}</p>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              id="btn-group-header-add-friends"
+              id="btn-group-header-add-members"
               onClick={() => setQuickActionModal('invite-friends')}
-              className="flex items-center gap-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 px-3.5 py-2.5 text-xs font-bold text-white transition-colors cursor-pointer shadow-md shadow-indigo-600/20"
+              className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 px-3.5 py-2.5 text-xs font-bold text-white transition-all cursor-pointer shadow-md shadow-emerald-600/20"
             >
               <UserPlus className="h-4 w-4" />
-              <span>+ Add Friends</span>
+              <span>+ Add Members</span>
             </button>
             <button
-              id="btn-group-header-whatsapp"
+              id="btn-group-header-share"
               onClick={() => handleWhatsAppShare()}
               className="flex items-center gap-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 px-3 py-2.5 text-xs font-bold text-emerald-300 transition-colors cursor-pointer"
             >
-              <MessageCircle className="h-4 w-4 text-emerald-400" />
-              <span>WhatsApp</span>
+              <Share2 className="h-4 w-4 text-emerald-400" />
+              <span>Share</span>
             </button>
             <button
-              onClick={() => setQuickActionModal('contribute')}
-              className="flex items-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2.5 text-xs font-bold text-white transition-colors cursor-pointer shadow-md shadow-emerald-600/20"
-            >
-              <HeartHandshake className="h-4 w-4" />
-              <span>Contribute</span>
-            </button>
-            <button
+              id="btn-group-header-qr"
               onClick={() => setActiveGroupTab('qr')}
               className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3 py-2.5 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"
             >
               <QrCode className="h-4 w-4 text-emerald-400" />
-              <span>Share & QR</span>
+              <span>QR</span>
+            </button>
+            <button
+              onClick={() => setQuickActionModal('contribute')}
+              className="flex items-center gap-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 border border-slate-700 px-3.5 py-2.5 text-xs font-bold text-white transition-colors cursor-pointer"
+            >
+              <HeartHandshake className="h-4 w-4 text-rose-400" />
+              <span>Contribute</span>
             </button>
           </div>
         </div>
@@ -386,12 +403,12 @@ export const GroupsView: React.FC = () => {
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-bold text-white">Active Group Members ({groupMembers.length})</h3>
                 <button
-                  id="btn-active-members-add-member"
+                  id="btn-active-members-add-members"
                   onClick={() => setQuickActionModal('invite-friends')}
                   className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white transition-colors cursor-pointer shadow-sm"
                 >
                   <UserPlus className="h-3.5 w-3.5" />
-                  <span>+ Add Member</span>
+                  <span>+ Add Members</span>
                 </button>
               </div>
 
@@ -451,10 +468,10 @@ export const GroupsView: React.FC = () => {
                 <button
                   id="btn-members-tab-invite"
                   onClick={() => setQuickActionModal('invite-friends')}
-                  className="flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-xs font-bold text-white transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white transition-colors cursor-pointer"
                 >
                   <UserPlus className="h-3.5 w-3.5" />
-                  <span>+ Invite Friend</span>
+                  <span>+ Add Members</span>
                 </button>
               </div>
 
@@ -462,14 +479,14 @@ export const GroupsView: React.FC = () => {
                 <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-center text-slate-400">
                   <p>No invitations sent yet.</p>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Invite friends by mobile number. They can join securely or register with CPA identity.
+                    Invite friends by mobile number or search CPA registered users. They can join securely.
                   </p>
                   <button
                     onClick={() => setQuickActionModal('invite-friends')}
                     className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3.5 py-1.5 text-xs font-bold text-white cursor-pointer"
                   >
                     <UserPlus className="h-3.5 w-3.5" />
-                    <span>Invite Friends</span>
+                    <span>+ Add Members</span>
                   </button>
                 </div>
               ) : (
@@ -508,6 +525,8 @@ export const GroupsView: React.FC = () => {
                               ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
                               : inv.status === 'OPENED'
                               ? 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20'
+                              : inv.status === 'CANCELLED'
+                              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                               : 'bg-slate-800 text-slate-300'
                           }`}
                         >
@@ -533,6 +552,17 @@ export const GroupsView: React.FC = () => {
                           <Copy className="h-3 w-3 text-slate-400" />
                           <span>Copy Link</span>
                         </button>
+
+                        {inv.status !== 'ACCEPTED' && inv.status !== 'CANCELLED' && (
+                          <button
+                            onClick={() => handleCancelInvite(inv.id)}
+                            disabled={cancellingInviteId === inv.id}
+                            className="flex items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-2.5 py-1 text-xs font-semibold text-rose-300 transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            <XCircle className="h-3 w-3 text-rose-400" />
+                            <span>{cancellingInviteId === inv.id ? 'Cancelling...' : 'Cancel'}</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}

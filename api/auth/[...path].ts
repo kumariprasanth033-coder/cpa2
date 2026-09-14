@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'http';
-import handleRequest from './_handler';
+import handleRequest from '../_handler';
 
 export default function handler(req: any, res: ServerResponse) {
-  return handleRequest(req, res);
+  return handleRequest(req, res, '/api/auth');
 }

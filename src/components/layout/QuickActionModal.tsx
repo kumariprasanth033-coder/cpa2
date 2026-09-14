@@ -31,6 +31,11 @@ import {
   Check,
   Share2,
   MessageCircle,
+  Search,
+  Phone,
+  Clock,
+  UserCheck,
+  XCircle,
 } from 'lucide-react';
 
 export const QuickActionModal: React.FC = () => {
@@ -46,6 +51,12 @@ export const QuickActionModal: React.FC = () => {
     recordContribution,
     createJoinRequest,
     createFriendInvitation,
+    fetchGroupInvitations,
+    cancelGroupInvitation,
+    searchCpaUsers,
+    joinRequests,
+    approveJoinRequest,
+    rejectJoinRequest,
     setActiveTab,
     setActiveGroupTab,
     wallets,
@@ -78,6 +89,15 @@ export const QuickActionModal: React.FC = () => {
   const [isSubmittingInvite, setIsSubmittingInvite] = useState(false);
   const [invitationResult, setInvitationResult] = useState<GroupInvitation | null>(null);
   const [copiedInviteLink, setCopiedInviteLink] = useState(false);
+
+  // Add Members Tabbed Experience
+  const [memberAddTab, setMemberAddTab] = useState<'search' | 'phone' | 'share' | 'invitations'>('search');
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userSearchResults, setUserSearchResults] = useState<any[]>([]);
+  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
+  const [invitingUserId, setInvitingUserId] = useState<string | null>(null);
+  const [modalInvitations, setModalInvitations] = useState<GroupInvitation[]>([]);
+  const [cancellingModalInviteId, setCancellingModalInviteId] = useState<string | null>(null);
 
   // Contribute Form State
   const [contributeAmount, setContributeAmount] = useState('500');
@@ -250,8 +270,6 @@ export const QuickActionModal: React.FC = () => {
     }
   };
 
-  if (!quickActionModal) return null;
-
   const handleClose = () => {
     stopCamera();
     setFeedback(null);
@@ -264,7 +282,100 @@ export const QuickActionModal: React.FC = () => {
     setInviteFriendName('');
     setInviteMobileNumber('');
     setInviteEmail('');
+    setUserSearchQuery('');
+    setUserSearchResults([]);
+    setMemberAddTab('search');
     setQuickActionModal(null);
+  };
+
+  // Sync group invitations and QRs when modal opens for invite-friends or createdGroupView
+  useEffect(() => {
+    const targetGroup = createdGroupData || activeGroup;
+    if (!targetGroup) return;
+
+    if (quickActionModal === 'invite-friends' || createdGroupView === 'INVITE_FRIENDS') {
+      fetchGroupInvitations(targetGroup.id).then((res) => {
+        setModalInvitations(res || []);
+      });
+      generateGroupQrs(targetGroup);
+    }
+  }, [quickActionModal, createdGroupView, createdGroupData?.id, activeGroup?.id]);
+
+  // Debounced search for registered CPA users
+  useEffect(() => {
+    const targetGroup = createdGroupData || activeGroup;
+    const q = userSearchQuery.trim();
+    if (!q || q.length < 2) {
+      setUserSearchResults([]);
+      setIsSearchingUsers(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearchingUsers(true);
+      try {
+        const results = await searchCpaUsers(q, targetGroup?.id);
+        setUserSearchResults(results || []);
+      } finally {
+        setIsSearchingUsers(false);
+      }
+    }, 280);
+
+    return () => clearTimeout(timer);
+  }, [userSearchQuery, createdGroupData?.id, activeGroup?.id]);
+
+  const handleInviteSearchedUser = async (user: any) => {
+    const targetGroup = createdGroupData || activeGroup;
+    if (!targetGroup) return;
+
+    setInvitingUserId(user.id);
+    setFeedback(null);
+    try {
+      const res = await createFriendInvitation(
+        targetGroup.id,
+        user.fullName || '',
+        user.phone || '',
+        user.email || undefined
+      );
+      if (res.success && res.invitation) {
+        setInvitationResult(res.invitation);
+        setFeedback({
+          type: 'success',
+          message: `Invitation dispatched to ${user.fullName} (${res.invitation.inviteePhone})!`,
+        });
+        const updated = await fetchGroupInvitations(targetGroup.id);
+        setModalInvitations(updated);
+        // Mark as invited in the current search results list
+        setUserSearchResults((prev) =>
+          prev.map((u) => (u.id === user.id ? { ...u, isInvited: true, inviteStatus: 'INVITE_SENT' } : u))
+        );
+      } else {
+        setFeedback({
+          type: 'error',
+          message: res.error || 'Failed to send invitation.',
+        });
+      }
+    } finally {
+      setInvitingUserId(null);
+    }
+  };
+
+  const handleCancelModalInvite = async (invitationId: string) => {
+    const targetGroup = createdGroupData || activeGroup;
+    if (!targetGroup) return;
+    setCancellingModalInviteId(invitationId);
+    try {
+      const res = await cancelGroupInvitation(targetGroup.id, invitationId);
+      if (res.success) {
+        const updated = await fetchGroupInvitations(targetGroup.id);
+        setModalInvitations(updated);
+        setFeedback({ type: 'success', message: 'Invitation cancelled.' });
+      } else {
+        setFeedback({ type: 'error', message: res.error || 'Failed to cancel invitation.' });
+      }
+    } finally {
+      setCancellingModalInviteId(null);
+    }
   };
 
   const generateGroupQrs = async (group: GroupCPA) => {
@@ -371,6 +482,7 @@ export const QuickActionModal: React.FC = () => {
         type: 'success',
         message: res.message || `Invitation dispatched to ${res.invitation.inviteePhone}!`,
       });
+      fetchGroupInvitations(targetGroup.id).then((updated) => setModalInvitations(updated || []));
     } else {
       setFeedback({
         type: 'error',
@@ -484,6 +596,8 @@ export const QuickActionModal: React.FC = () => {
 
   const activeWallet = activeGroup ? wallets[activeGroup.walletId] : undefined;
 
+  if (!quickActionModal) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm overflow-y-auto">
       <div className="relative w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-8">
@@ -503,8 +617,8 @@ export const QuickActionModal: React.FC = () => {
               {quickActionModal === 'pay' && <Send className="h-5 w-5" />}
             </span>
             <h2 className="text-base font-bold text-white">
-              {quickActionModal === 'create-group' && (createdGroupView === 'INVITE_FRIENDS' ? 'Invite Friends' : createdGroupView === 'READY_OPTIONS' ? 'Your CPA Group is Ready' : 'Create Centralized Group CPA')}
-              {quickActionModal === 'invite-friends' && 'Invite Friends'}
+              {quickActionModal === 'create-group' && (createdGroupView === 'INVITE_FRIENDS' ? 'Add Members to Group' : createdGroupView === 'READY_OPTIONS' ? 'Your CPA Group is Ready' : 'Create Centralized Group CPA')}
+              {quickActionModal === 'invite-friends' && 'Add Members to Group'}
               {quickActionModal === 'contribute' && `Contribute to ${activeGroup?.name || 'Group'}`}
               {quickActionModal === 'withdraw' && 'Request Treasury Disbursement'}
               {quickActionModal === 'join-cpa' && 'Request Access to Group CPA'}
@@ -611,15 +725,15 @@ export const QuickActionModal: React.FC = () => {
                 </div>
               </div>
 
-              {/* Primary Action Button: [ + Add Friends ] */}
+              {/* Primary Action Button: [ + Add Members ] */}
               <button
                 type="button"
-                id="btn-add-friends-ready"
+                id="btn-add-members-ready"
                 onClick={() => setCreatedGroupView('INVITE_FRIENDS')}
                 className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 py-3 font-bold text-white hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer shadow-lg shadow-emerald-600/20 text-sm"
               >
                 <UserPlus className="h-4 w-4" />
-                <span>+ Add Friends</span>
+                <span>+ Add Members</span>
               </button>
 
               {/* Real Post-Creation Actions */}
@@ -781,84 +895,388 @@ export const QuickActionModal: React.FC = () => {
             </form>
           )}
 
-          {/* INVITE FRIENDS VIEW (Either from post-creation or direct quick action) */}
+          {/* ADD MEMBERS VIEW (Either from post-creation or direct quick action) */}
           {(quickActionModal === 'invite-friends' || (quickActionModal === 'create-group' && createdGroupView === 'INVITE_FRIENDS')) && (
             <div className="space-y-4 text-xs">
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 flex items-center justify-between">
+              {/* Target Group Banner */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3 flex items-center justify-between">
                 <div>
                   <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Target Group</span>
                   <div className="font-bold text-white text-sm">{(createdGroupData || activeGroup)?.name || 'Centralized Pocket Account'}</div>
                 </div>
-                <span className="font-mono text-xs text-emerald-400 bg-slate-900 border border-slate-800 px-2 py-1 rounded">
-                  {(createdGroupData || activeGroup)?.cpaNumber}
-                </span>
+                <div className="text-right">
+                  <span className="font-mono text-xs text-emerald-400 bg-slate-900 border border-slate-800 px-2 py-1 rounded">
+                    {(createdGroupData || activeGroup)?.cpaNumber}
+                  </span>
+                  <div className="text-[10px] text-slate-400 mt-0.5">{(createdGroupData || activeGroup)?.purpose}</div>
+                </div>
               </div>
 
-              <form onSubmit={handleSendInvite} className="space-y-3">
-                <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Friend Name (Optional)</label>
-                  <input
-                    type="text"
-                    id="input-invite-friend-name"
-                    placeholder="e.g. Rahul Sharma"
-                    value={inviteFriendName}
-                    onChange={(e) => setInviteFriendName(e.target.value)}
-                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
-                  />
-                </div>
+              {/* Subtabs for Adding Members */}
+              <div className="flex border-b border-slate-800 pb-1 gap-1 overflow-x-auto">
+                <button
+                  type="button"
+                  id="tab-search-cpa-users"
+                  onClick={() => setMemberAddTab('search')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                    memberAddTab === 'search'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Search className="h-3.5 w-3.5" />
+                  <span>Search CPA Users</span>
+                </button>
+                <button
+                  type="button"
+                  id="tab-invite-by-mobile"
+                  onClick={() => setMemberAddTab('phone')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                    memberAddTab === 'phone'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Phone className="h-3.5 w-3.5" />
+                  <span>Invite by Mobile</span>
+                </button>
+                <button
+                  type="button"
+                  id="tab-share-and-qr"
+                  onClick={() => setMemberAddTab('share')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                    memberAddTab === 'share'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <QrCode className="h-3.5 w-3.5" />
+                  <span>Share & QR</span>
+                </button>
+                <button
+                  type="button"
+                  id="tab-modal-invites"
+                  onClick={() => setMemberAddTab('invitations')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                    memberAddTab === 'invitations'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Clock className="h-3.5 w-3.5" />
+                  <span>Sent Invites ({modalInvitations.length})</span>
+                </button>
+              </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Mobile Number *</label>
-                  <div className="relative flex">
-                    <span className="inline-flex items-center px-3 rounded-l-xl border border-r-0 border-slate-800 bg-slate-900 text-slate-400 font-mono text-xs">
-                      +91
-                    </span>
+              {/* TAB 1: SEARCH CPA USERS */}
+              {memberAddTab === 'search' && (
+                <div className="space-y-3">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
                     <input
-                      type="tel"
-                      id="input-invite-friend-phone"
-                      required
-                      placeholder="10-digit Indian mobile number"
-                      value={inviteMobileNumber}
-                      onChange={(e) => setInviteMobileNumber(e.target.value)}
-                      className="w-full rounded-r-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none font-mono"
+                      type="text"
+                      id="input-search-cpa-users"
+                      placeholder="Search CPA registered users by name, phone, or email..."
+                      value={userSearchQuery}
+                      onChange={(e) => setUserSearchQuery(e.target.value)}
+                      className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-9 pr-8 py-2.5 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
+                    {userSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setUserSearchQuery('')}
+                        className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300 cursor-pointer"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {isSearchingUsers ? (
+                    <div className="p-4 text-center text-slate-400">
+                      <RefreshCw className="h-4 w-4 animate-spin mx-auto mb-1 text-emerald-400" />
+                      Searching registered CPA network...
+                    </div>
+                  ) : userSearchQuery.trim().length >= 2 ? (
+                    userSearchResults.length === 0 ? (
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4 text-center text-slate-400">
+                        <p>No CPA users found matching "{userSearchQuery}".</p>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          You can switch to the "Invite by Mobile" tab to send a direct WhatsApp/SMS invite to any mobile number.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInviteMobileNumber(userSearchQuery.replace(/\D/g, ''));
+                            setMemberAddTab('phone');
+                          }}
+                          className="mt-2 text-emerald-400 font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Phone className="h-3 w-3" />
+                          <span>Invite with Mobile Number instead →</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {userSearchResults.map((u) => (
+                          <div
+                            key={u.id}
+                            className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800 bg-slate-950/70 hover:bg-slate-950 transition-colors"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <div className="h-8 w-8 rounded-full bg-indigo-500/20 text-indigo-300 font-bold flex items-center justify-center text-xs">
+                                {u.fullName?.charAt(0) || 'U'}
+                              </div>
+                              <div>
+                                <div className="font-bold text-white text-xs">{u.fullName}</div>
+                                <div className="text-[10px] text-slate-400 flex items-center gap-2">
+                                  <span>{u.phone}</span>
+                                  {u.email && <span>• {u.email}</span>}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div>
+                              {u.isMember ? (
+                                <span className="rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-bold">
+                                  Member
+                                </span>
+                              ) : u.isInvited || u.inviteStatus === 'INVITE_SENT' ? (
+                                <span className="rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 px-2 py-0.5 text-[10px] font-bold">
+                                  Invited
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  id={`btn-invite-user-${u.id}`}
+                                  disabled={invitingUserId === u.id}
+                                  onClick={() => handleInviteSearchedUser(u)}
+                                  className="flex items-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-2.5 py-1 text-xs font-bold text-white transition-colors cursor-pointer disabled:opacity-50"
+                                >
+                                  <UserPlus className="h-3 w-3" />
+                                  <span>{invitingUserId === u.id ? 'Sending...' : '+ Add'}</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  ) : (
+                    <div className="p-4 text-center text-slate-500">
+                      <Users className="h-6 w-6 mx-auto mb-1 text-slate-600" />
+                      <p>Type 2 or more characters to find registered CPA users by name, mobile, or email.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: INVITE BY MOBILE */}
+              {memberAddTab === 'phone' && (
+                <form onSubmit={handleSendInvite} className="space-y-3">
+                  <div>
+                    <label className="block font-semibold text-slate-300 mb-1">Friend Name (Optional)</label>
+                    <input
+                      type="text"
+                      id="input-invite-friend-name"
+                      placeholder="e.g. Rahul Sharma"
+                      value={inviteFriendName}
+                      onChange={(e) => setInviteFriendName(e.target.value)}
+                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                     />
                   </div>
-                  <p className="text-[10px] text-slate-500 mt-1">
-                    Normalized to +91XXXXXXXXXX. Automatically links to existing CPA accounts or invites for new registration.
-                  </p>
-                </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Email (Optional)</label>
-                  <input
-                    type="email"
-                    id="input-invite-friend-email"
-                    placeholder="friend@example.com"
-                    value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
-                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
-                  />
-                </div>
+                  <div>
+                    <label className="block font-semibold text-slate-300 mb-1">Mobile Number *</label>
+                    <div className="relative flex">
+                      <span className="inline-flex items-center px-3 rounded-l-xl border border-r-0 border-slate-800 bg-slate-900 text-slate-400 font-mono text-xs">
+                        +91
+                      </span>
+                      <input
+                        type="tel"
+                        id="input-invite-friend-phone"
+                        required
+                        placeholder="10-digit Indian mobile number"
+                        value={inviteMobileNumber}
+                        onChange={(e) => setInviteMobileNumber(e.target.value)}
+                        className="w-full rounded-r-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none font-mono"
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Normalized to +91XXXXXXXXXX. Automatically links to existing CPA accounts or invites for new registration.
+                    </p>
+                  </div>
 
-                <div className="flex gap-2 pt-1">
-                  <button
-                    type="submit"
-                    id="btn-send-invite-submit"
-                    disabled={isSubmittingInvite}
-                    className="flex-1 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 py-2.5 font-bold text-white hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer shadow-lg shadow-emerald-600/20 disabled:opacity-50"
-                  >
-                    {isSubmittingInvite ? 'Validating & Dispatching...' : 'Send Invite'}
-                  </button>
-                  <button
-                    type="button"
-                    id="btn-add-another-friend"
-                    onClick={handleAddAnotherFriend}
-                    className="rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-750 px-3.5 py-2.5 font-semibold text-slate-300 transition-colors cursor-pointer"
-                  >
-                    Add Another Friend
-                  </button>
+                  <div>
+                    <label className="block font-semibold text-slate-300 mb-1">Email (Optional)</label>
+                    <input
+                      type="email"
+                      id="input-invite-friend-email"
+                      placeholder="friend@example.com"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="submit"
+                      id="btn-send-invite-submit"
+                      disabled={isSubmittingInvite}
+                      className="flex-1 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 py-2.5 font-bold text-white hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer shadow-lg shadow-emerald-600/20 disabled:opacity-50"
+                    >
+                      {isSubmittingInvite ? 'Validating & Dispatching...' : 'Send Invite'}
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-add-another-friend"
+                      onClick={handleAddAnotherFriend}
+                      className="rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-750 px-3.5 py-2.5 font-semibold text-slate-300 transition-colors cursor-pointer"
+                    >
+                      Add Another Friend
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* TAB 3: SHARE LINK & QR */}
+              {memberAddTab === 'share' && (
+                <div className="space-y-4">
+                  {/* QR Image Card */}
+                  <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 text-center">
+                    <div className="inline-block rounded-xl border border-emerald-500/20 bg-white p-2 shadow-lg mb-3">
+                      {joinQrDataUrl ? (
+                        <img
+                          src={joinQrDataUrl}
+                          alt="Join Group QR"
+                          className="h-44 w-44 object-contain mx-auto"
+                        />
+                      ) : (
+                        <div className="h-44 w-44 flex items-center justify-center text-slate-800">
+                          <QrCode className="h-10 w-10 animate-pulse text-slate-400" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="font-bold text-white text-xs">Scan to Join {(createdGroupData || activeGroup)?.name}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">
+                      Open camera or CPA Scanner to submit a join request.
+                    </div>
+                  </div>
+
+                  {/* Share actions */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      id="btn-share-tab-whatsapp"
+                      onClick={() => {
+                        const grp = createdGroupData || activeGroup;
+                        if (grp) openWhatsAppShare(grp);
+                      }}
+                      className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 py-2.5 font-bold text-emerald-300 transition-colors cursor-pointer"
+                    >
+                      <MessageCircle className="h-4 w-4 text-emerald-400" />
+                      <span>WhatsApp</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      id="btn-share-tab-copy"
+                      onClick={() => {
+                        const grp = createdGroupData || activeGroup;
+                        if (grp) handleCopyLink(grp.secureToken);
+                      }}
+                      className="flex items-center justify-center gap-2 rounded-xl bg-slate-800 hover:bg-slate-750 border border-slate-700 py-2.5 font-semibold text-slate-200 transition-colors cursor-pointer"
+                    >
+                      {copiedLink ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4 text-slate-400" />}
+                      <span>{copiedLink ? 'Link Copied!' : 'Copy Link'}</span>
+                    </button>
+                  </div>
                 </div>
-              </form>
+              )}
+
+              {/* TAB 4: SENT INVITATIONS */}
+              {memberAddTab === 'invitations' && (
+                <div className="space-y-2">
+                  {modalInvitations.length === 0 ? (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-5 text-center text-slate-400">
+                      <Users className="h-6 w-6 mx-auto mb-1 text-slate-600" />
+                      <p>No invitations sent for this group yet.</p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Use "Search CPA Users" or "Invite by Mobile" to send invitations.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-800/80 rounded-xl border border-slate-800 bg-slate-950/70 overflow-hidden max-h-60 overflow-y-auto">
+                      {modalInvitations.map((inv) => (
+                        <div key={inv.id} className="p-3 flex items-center justify-between gap-2 text-xs">
+                          <div>
+                            <div className="font-bold text-white flex items-center gap-1.5">
+                              <span>{inv.inviteeName || 'Friend'}</span>
+                              <span className="font-mono text-slate-400 text-[11px]">({inv.inviteePhone})</span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">
+                              Invited {new Date(inv.createdAt).toLocaleDateString()}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
+                                inv.status === 'ACCEPTED'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                  : inv.status === 'JOIN_REQUESTED'
+                                  ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                                  : inv.status === 'CANCELLED'
+                                  ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                  : 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20'
+                              }`}
+                            >
+                              {inv.status}
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const grp = createdGroupData || activeGroup;
+                                if (grp) openWhatsAppShare(grp, inv.joinUrl);
+                              }}
+                              className="rounded bg-emerald-600/20 hover:bg-emerald-600/30 p-1 text-emerald-400 cursor-pointer"
+                              title="WhatsApp Share"
+                            >
+                              <MessageCircle className="h-3.5 w-3.5" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard?.writeText(inv.joinUrl);
+                                setCopiedInviteLink(true);
+                                setTimeout(() => setCopiedInviteLink(false), 2000);
+                              }}
+                              className="rounded bg-slate-800 hover:bg-slate-700 p-1 text-slate-300 cursor-pointer"
+                              title="Copy Link"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+
+                            {inv.status !== 'ACCEPTED' && inv.status !== 'CANCELLED' && (
+                              <button
+                                type="button"
+                                onClick={() => handleCancelModalInvite(inv.id)}
+                                disabled={cancellingModalInviteId === inv.id}
+                                className="rounded bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 px-2 py-0.5 text-[10px] font-semibold text-rose-300 cursor-pointer disabled:opacity-50"
+                              >
+                                {cancellingModalInviteId === inv.id ? '...' : 'Cancel'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Real Invitation Result Card */}
               {invitationResult && (

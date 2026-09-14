@@ -44,17 +44,9 @@ export const SplitExpenseView: React.FC = () => {
     recordExpense({
       title,
       totalAmount,
-      splitType: splitMethod,
+      splitMethod,
+      selectedMemberIds,
       category: 'Food & Snacks',
-      splits: selectedMemberIds.map((uid) => {
-        const m = (groupMembers || []).find((gm) => gm.userId === uid);
-        return {
-          userId: uid,
-          userName: m?.user?.fullName || 'Member',
-          amount: perPersonAmount,
-          hasSettled: false,
-        };
-      }),
     });
 
     // Post to group chat

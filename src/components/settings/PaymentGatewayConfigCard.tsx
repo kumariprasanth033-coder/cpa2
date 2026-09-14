@@ -287,7 +287,7 @@ export const PaymentGatewayConfigCard: React.FC = () => {
         </div>
         <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
           <span className="flex-1 font-mono text-xs text-cyan-300 truncate select-all">
-            {systemConfig?.webhookUrl || 'http://localhost:3000/api/payments/webhook'}
+            {systemConfig?.webhookUrl || (typeof window !== 'undefined' ? `${window.location.origin}/api/payments/webhook` : '/api/payments/webhook')}
           </span>
           <button
             type="button"

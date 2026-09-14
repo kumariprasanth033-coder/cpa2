@@ -121,9 +121,9 @@ export const MessagesView: React.FC = () => {
                       </div>
                       {!isMe && (
                         <button
-                          onClick={() => {
+                          onClick={async () => {
                             if (msg.financialData?.referenceId) {
-                              const res = approveWithdrawalRequest(msg.financialData.referenceId);
+                              const res = await approveWithdrawalRequest(msg.financialData.referenceId);
                               alert(res.message);
                             }
                           }}

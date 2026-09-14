@@ -15,17 +15,31 @@ export interface ApiResponse<T = any> {
 /**
  * Resolves the full URL for any CPA API endpoint.
  * - If VITE_API_URL is configured (e.g., frontend deployed on Vercel and backend hosted separately),
- *   it prepends VITE_API_URL (trimmed of any trailing slashes).
- * - If VITE_API_URL is empty, it uses relative same-origin path (e.g., /api/...).
+ *   it prepends VITE_API_URL (trimmed of any trailing slashes) while preventing duplicate /api prefixes.
+ * - If VITE_API_URL is empty, '/', or '/api', it uses relative same-origin path (e.g., /api/...).
  */
 export function getApiUrl(endpoint: string): string {
   const metaEnv = (import.meta as any).env;
-  const envUrl = ((metaEnv && metaEnv.VITE_API_URL) || '').trim().replace(/\/+$/, '');
+  const rawEnvUrl = ((metaEnv && metaEnv.VITE_API_URL) || '').trim().replace(/\/+$/, '');
   const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  if (!envUrl) {
-    return cleanPath;
+
+  // If VITE_API_URL is empty, root '/', or same-origin '/api'
+  if (!rawEnvUrl || rawEnvUrl === '/api' || rawEnvUrl === '/') {
+    return cleanPath.startsWith('/api') ? cleanPath : `/api${cleanPath}`;
   }
-  return `${envUrl}${cleanPath}`;
+
+  // If VITE_API_URL is an absolute URL (e.g., https://api.cpa.app or https://api.cpa.app/api)
+  const envHasApi = rawEnvUrl.endsWith('/api');
+  const pathHasApi = cleanPath.startsWith('/api/') || cleanPath === '/api';
+
+  if (envHasApi && pathHasApi) {
+    // Strip duplicate /api
+    return `${rawEnvUrl}${cleanPath.slice(4)}`;
+  } else if (!envHasApi && !pathHasApi) {
+    return `${rawEnvUrl}/api${cleanPath}`;
+  }
+
+  return `${rawEnvUrl}${cleanPath}`;
 }
 
 /**

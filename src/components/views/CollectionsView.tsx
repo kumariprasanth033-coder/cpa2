@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Lock,
   Sparkles,
+  UserPlus,
 } from 'lucide-react';
 
 export const CollectionsView: React.FC = () => {
@@ -55,13 +56,24 @@ export const CollectionsView: React.FC = () => {
             </p>
           </div>
 
-          <button
-            onClick={() => setQuickActionModal('contribute')}
-            className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-6 py-3.5 text-xs font-bold text-slate-950 shadow-xl shadow-emerald-500/25 hover:from-emerald-400 hover:to-teal-400 transition-all cursor-pointer shrink-0"
-          >
-            <HeartHandshake className="h-4 w-4" />
-            <span>Make a Contribution</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              id="btn-collections-add-members"
+              onClick={() => setQuickActionModal('invite-friends')}
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-600/20 hover:bg-emerald-600/30 px-4 py-3 text-xs font-bold text-emerald-300 transition-all cursor-pointer"
+            >
+              <UserPlus className="h-4 w-4 text-emerald-400" />
+              <span>+ Add Members</span>
+            </button>
+            <button
+              id="btn-collections-contribute"
+              onClick={() => setQuickActionModal('contribute')}
+              className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-5 py-3 text-xs font-bold text-slate-950 shadow-xl shadow-emerald-500/25 hover:from-emerald-400 hover:to-teal-400 transition-all cursor-pointer shrink-0"
+            >
+              <HeartHandshake className="h-4 w-4" />
+              <span>Make a Contribution</span>
+            </button>
+          </div>
         </div>
 
         {/* Progress Display */}

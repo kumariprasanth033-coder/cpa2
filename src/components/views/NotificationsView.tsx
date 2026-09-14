@@ -54,16 +54,16 @@ export const NotificationsView: React.FC = () => {
                 <div className="flex items-start gap-3">
                   <div
                     className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
-                      n.type === 'CONTRIBUTION'
+                      n.type === 'PAYMENT_RECEIVED'
                         ? 'bg-emerald-500/10 text-emerald-400'
-                        : n.type === 'APPROVAL'
+                        : n.type === 'APPROVAL_NEEDED' || n.type === 'APPROVAL_RESULT'
                         ? 'bg-amber-500/10 text-amber-400'
                         : 'bg-indigo-500/10 text-indigo-400'
                     }`}
                   >
-                    {n.type === 'CONTRIBUTION' ? (
+                    {n.type === 'PAYMENT_RECEIVED' ? (
                       <HeartHandshake className="h-4 w-4" />
-                    ) : n.type === 'APPROVAL' ? (
+                    ) : n.type === 'APPROVAL_NEEDED' || n.type === 'APPROVAL_RESULT' ? (
                       <ShieldCheck className="h-4 w-4" />
                     ) : (
                       <Sparkles className="h-4 w-4" />

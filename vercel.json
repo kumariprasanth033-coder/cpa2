@@ -1,5 +1,10 @@
 {
   "version": 2,
+  "functions": {
+    "api/**/*.ts": {
+      "includeFiles": "cpa_production.db*"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/cpa/auth/(.*)",
@@ -7,7 +12,7 @@
     },
     {
       "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "destination": "/api?path=$1"
     },
     {
       "source": "/((?!api/).*)",

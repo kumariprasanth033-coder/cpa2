@@ -18,12 +18,41 @@ function getProductionDbPath(): string {
 
   if (isServerless) {
     const tmpDbPath = path.join('/tmp', 'cpa_production.db');
-    const localDbPath = path.join(process.cwd(), 'cpa_production.db');
-    if (!fs.existsSync(tmpDbPath) && fs.existsSync(localDbPath)) {
-      try {
-        fs.copyFileSync(localDbPath, tmpDbPath);
-      } catch (err) {
-        console.warn('Could not copy seed database to /tmp:', err);
+    
+    // Check candidate locations where Vercel might place cpa_production.db
+    const candidateDirs = [
+      process.cwd(),
+      __dirname,
+      path.resolve(__dirname, '..'),
+      path.resolve(__dirname, '../..'),
+    ];
+
+    let foundSeedPath: string | null = null;
+    for (const dir of candidateDirs) {
+      const p = path.join(dir, 'cpa_production.db');
+      if (fs.existsSync(p)) {
+        foundSeedPath = p;
+        break;
+      }
+    }
+
+    if (foundSeedPath) {
+      const tmpExists = fs.existsSync(tmpDbPath);
+      const tmpSize = tmpExists ? fs.statSync(tmpDbPath).size : 0;
+      const seedSize = fs.statSync(foundSeedPath).size;
+
+      // Copy if /tmp does not exist or is empty
+      if (!tmpExists || tmpSize === 0) {
+        try {
+          fs.copyFileSync(foundSeedPath, tmpDbPath);
+          // Also copy WAL/SHM companion files if present
+          const seedWal = `${foundSeedPath}-wal`;
+          const seedShm = `${foundSeedPath}-shm`;
+          if (fs.existsSync(seedWal)) fs.copyFileSync(seedWal, `${tmpDbPath}-wal`);
+          if (fs.existsSync(seedShm)) fs.copyFileSync(seedShm, `${tmpDbPath}-shm`);
+        } catch (err) {
+          console.warn('Could not copy seed database to /tmp:', err);
+        }
       }
     }
     return tmpDbPath;
@@ -364,6 +393,33 @@ try {
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS group_invitations (
+      id TEXT PRIMARY KEY,
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      inviter_user_id TEXT NOT NULL REFERENCES users(id),
+      invitee_user_id TEXT REFERENCES users(id),
+      invitee_name TEXT,
+      invitee_phone TEXT,
+      invitee_email TEXT,
+      secure_token TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'INVITE_SENT',
+      accepted_at TEXT,
+      cancelled_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS group_join_requests (
+      id TEXT PRIMARY KEY,
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      applicant_user_id TEXT NOT NULL REFERENCES users(id),
+      invitation_id TEXT REFERENCES group_invitations(id),
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      created_at TEXT NOT NULL,
+      reviewed_by TEXT REFERENCES users(id),
+      reviewed_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS payment_orders (

@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'http';
-import handleRequest from './_handler';
+import app from '../server';
 
 export default function handler(req: any, res: ServerResponse) {
-  return handleRequest(req, res);
+  return app(req, res);
 }

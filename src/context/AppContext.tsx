@@ -22,7 +22,7 @@ import {
   INITIAL_PERSONAL_CPA,
   INITIAL_PERSONAL_BUDGET,
 } from '../data/initialData';
-import { safeApiRequest } from '../lib/api';
+import { safeApiRequest, getApiUrl } from '../lib/api';
 
 export type MainNavTab =
   | 'login'
@@ -30,6 +30,7 @@ export type MainNavTab =
   | 'landing'
   | 'dashboard'
   | 'my-cpa'
+  | 'personal-cpa'
   | 'groups'
   | 'group-detail'
   | 'messages'
@@ -87,6 +88,7 @@ interface AppContextType {
   user: UserProfile;
   setCurrentUser: (user: UserProfile) => void;
   isLoggedIn: boolean;
+  isAuthLoading: boolean;
   authToken: string | null;
   isDemoMode: boolean;
   login: (
@@ -167,8 +169,10 @@ interface AppContextType {
     deadline?: string;
   }) => Promise<GroupCPA | null>;
   createJoinRequest: (groupId: string, reason: string, pin?: string) => Promise<{ success: boolean; message?: string; error?: string }>;
-  approveJoinRequest: (groupId: string, requestId: string) => Promise<void>;
-  rejectJoinRequest: (groupId: string, requestId: string) => Promise<void>;
+  approveJoinRequest: (arg1: string, arg2?: string) => Promise<void>;
+  rejectJoinRequest: (arg1: string, arg2?: string) => Promise<void>;
+  fetchTransactions: () => Promise<void>;
+  fetchNotifications: () => Promise<void>;
   createFriendInvitation: (
     groupId: string,
     friendName: string,
@@ -176,6 +180,8 @@ interface AppContextType {
     email?: string
   ) => Promise<{ success: boolean; invitation?: GroupInvitation; error?: string; message?: string }>;
   fetchGroupInvitations: (groupId: string) => Promise<GroupInvitation[]>;
+  cancelGroupInvitation: (groupId: string, invitationId: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  searchCpaUsers: (query: string, groupId?: string) => Promise<any[]>;
   submitWithdrawalRequest: (
     groupId: string,
     amountPaise: number,
@@ -208,8 +214,74 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+// Helpers to synchronize browser URL and React SPA routing
+function getTabFromPathname(pathname: string): { tab: MainNavTab; groupId?: string } {
+  const clean = pathname.replace(/\/+$/, '') || '/';
+  if (clean === '/login') return { tab: 'login' };
+  if (clean === '/landing') return { tab: 'landing' };
+  if (clean === '/admin-dashboard') return { tab: 'admin-dashboard' };
+  if (clean === '/groups' || clean === '/group') return { tab: 'groups' };
+  if (clean.startsWith('/groups/')) {
+    const groupId = clean.split('/')[2];
+    return { tab: 'groups', groupId };
+  }
+  if (clean === '/my-cpa' || clean === '/personal-cpa') return { tab: 'my-cpa' };
+  if (clean === '/messages' || clean === '/chat') return { tab: 'messages' };
+  if (clean === '/split-expense') return { tab: 'split-expense' };
+  if (clean === '/collections') return { tab: 'collections' };
+  if (clean === '/goals') return { tab: 'goals' };
+  if (clean === '/transactions') return { tab: 'transactions' };
+  if (clean === '/approvals') return { tab: 'approvals' };
+  if (clean === '/ai-manager') return { tab: 'ai-manager' };
+  if (clean === '/notifications') return { tab: 'notifications' };
+  if (clean === '/profile') return { tab: 'profile' };
+  if (clean === '/settings') return { tab: 'settings' };
+  if (clean === '/trust-center') return { tab: 'trust-center' };
+  return { tab: 'dashboard' };
+}
+
+function getPathFromTab(tab: MainNavTab, selectedGroupId?: string): string {
+  switch (tab) {
+    case 'login': return '/login';
+    case 'landing': return '/landing';
+    case 'admin-dashboard': return '/admin-dashboard';
+    case 'groups': return selectedGroupId ? `/groups/${selectedGroupId}` : '/groups';
+    case 'group-detail': return selectedGroupId ? `/groups/${selectedGroupId}` : '/groups';
+    case 'my-cpa': return '/my-cpa';
+    case 'messages': return '/messages';
+    case 'split-expense': return '/split-expense';
+    case 'collections': return '/collections';
+    case 'goals': return '/goals';
+    case 'transactions': return '/transactions';
+    case 'approvals': return '/approvals';
+    case 'ai-manager': return '/ai-manager';
+    case 'notifications': return '/notifications';
+    case 'profile': return '/profile';
+    case 'settings': return '/settings';
+    case 'trust-center': return '/trust-center';
+    case 'dashboard':
+    default: return '/dashboard';
+  }
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeTab, setActiveTab] = useState<MainNavTab>('dashboard');
+  const initialRoute = useMemo(() => {
+    if (typeof window !== 'undefined') {
+      return getTabFromPathname(window.location.pathname);
+    }
+    return { tab: 'dashboard' as MainNavTab };
+  }, []);
+
+  const [activeTab, setActiveTabState] = useState<MainNavTab>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname.startsWith('/join/')) {
+        return 'dashboard';
+      }
+      return initialRoute.tab;
+    }
+    return 'dashboard';
+  });
+
   const [activeGroupTab, setActiveGroupTab] = useState<GroupSubTab>('overview');
   const [quickActionModal, setQuickActionModal] = useState<QuickActionType | null>(null);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('LIVE');
@@ -220,13 +292,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
     return Boolean(localStorage.getItem('cpa_auth_token'));
   });
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(() => {
+    return Boolean(localStorage.getItem('cpa_auth_token'));
+  });
 
   const [currentUser, setCurrentUser] = useState<UserProfile>(EMPTY_USER);
   const [personalCpa, setPersonalCpa] = useState<CPAAccount>(INITIAL_PERSONAL_CPA);
   const [personalBudget, setPersonalBudget] = useState<PersonalPocketBudget>(INITIAL_PERSONAL_BUDGET);
 
   const [groups, setGroups] = useState<GroupCPA[]>([]);
-  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
+  const [selectedGroupId, setSelectedGroupId] = useState<string>(() => initialRoute.groupId || '');
   const [members, setMembers] = useState<GroupMember[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [wallets, setWallets] = useState<Record<string, Wallet>>({});
@@ -262,11 +337,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return `${symbol}${amount}`;
   };
 
+  // Navigation tab handler with browser URL synchronization
+  const setActiveTab = useCallback((tab: MainNavTab) => {
+    setActiveTabState(tab);
+    if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/join/')) {
+      const targetPath = getPathFromTab(tab, selectedGroupId);
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState({ tab }, '', targetPath);
+      }
+    }
+  }, [selectedGroupId]);
+
+  // Synchronize on browser Back/Forward (popstate)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = () => {
+      if (window.location.pathname.startsWith('/join/')) return;
+      const parsed = getTabFromPathname(window.location.pathname);
+      setActiveTabState(parsed.tab);
+      if (parsed.groupId) {
+        setSelectedGroupId(parsed.groupId);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   // Authoritative data fetcher
   const refreshUserData = useCallback(async () => {
     const token = localStorage.getItem('cpa_auth_token') || authToken;
     if (!token) {
       setIsLoggedIn(false);
+      setIsAuthLoading(false);
       return;
     }
 
@@ -281,11 +383,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       if (res.status === 401) {
-        // Token expired
+        // Token expired or invalid
         localStorage.removeItem('cpa_auth_token');
         setAuthToken(null);
         setIsLoggedIn(false);
         setCurrentUser(EMPTY_USER);
+        setIsAuthLoading(false);
         return;
       }
 
@@ -333,6 +436,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } catch (err) {
       console.error('Failed to fetch user data:', err);
+    } finally {
+      setIsAuthLoading(false);
     }
   }, [authToken]);
 
@@ -476,7 +581,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     if (!isLoggedIn || !authToken) return;
 
-    const eventSource = new EventSource(`/api/events?token=${authToken}`);
+    const eventSource = new EventSource(getApiUrl(`/api/events?token=${authToken}`));
 
     eventSource.onmessage = (event) => {
       try {
@@ -697,7 +802,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const approveJoinRequest = async (groupId: string, requestId: string) => {
+  const approveJoinRequest = async (arg1: string, arg2?: string) => {
+    const groupId = arg2 ? arg1 : (joinRequests.find((r) => r.id === arg1)?.groupId || selectedGroupId);
+    const requestId = arg2 || arg1;
+    if (!groupId || !requestId) return;
+
     const token = localStorage.getItem('cpa_auth_token') || authToken;
     if (!token) return;
 
@@ -716,7 +825,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const rejectJoinRequest = async (groupId: string, requestId: string) => {
+  const rejectJoinRequest = async (arg1: string, arg2?: string) => {
+    const groupId = arg2 ? arg1 : (joinRequests.find((r) => r.id === arg1)?.groupId || selectedGroupId);
+    const requestId = arg2 || arg1;
+    if (!groupId || !requestId) return;
+
     const token = localStorage.getItem('cpa_auth_token') || authToken;
     if (!token) return;
 
@@ -782,6 +895,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } catch (err) {
       console.error('Failed to fetch invitations:', err);
+    }
+    return [];
+  };
+
+  const cancelGroupInvitation = async (
+    groupId: string,
+    invitationId: string
+  ): Promise<{ success: boolean; message?: string; error?: string }> => {
+    const token = localStorage.getItem('cpa_auth_token') || authToken;
+    if (!token) return { success: false, error: 'Authentication required.' };
+
+    try {
+      const res = await safeApiRequest<{ success: boolean; message?: string; error?: string }>(
+        `/api/groups/${groupId}/invitations/${invitationId}/cancel`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      if (!res.ok || !res.data?.success) {
+        return { success: false, error: res.error || res.data?.error || 'Failed to cancel invitation.' };
+      }
+      return { success: true, message: res.data.message };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Network error while cancelling invitation.' };
+    }
+  };
+
+  const searchCpaUsers = async (query: string, groupId?: string): Promise<any[]> => {
+    const token = localStorage.getItem('cpa_auth_token') || authToken;
+    if (!token || !query || query.trim().length < 2) return [];
+
+    try {
+      const url = `/api/users/search?q=${encodeURIComponent(query.trim())}${groupId ? `&groupId=${encodeURIComponent(groupId)}` : ''}`;
+      const res = await safeApiRequest<{ success: boolean; users?: any[] }>(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok && res.data?.success && Array.isArray(res.data.users)) {
+        return res.data.users;
+      }
+    } catch (err) {
+      console.error('Failed to search users:', err);
     }
     return [];
   };
@@ -1163,6 +1321,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         user: currentUser,
         setCurrentUser,
         isLoggedIn,
+        isAuthLoading,
         authToken,
         isDemoMode: false,
         login,
@@ -1180,6 +1339,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         wallets,
         personalBudget,
         transactions,
+        fetchTransactions,
         approvalRequests,
         payoutDestinations,
         fetchPayoutDestinations,
@@ -1188,6 +1348,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         verifyPhoneOtp,
         chatMessages,
         notifications,
+        fetchNotifications,
         unreadNotificationCount,
         aiInsights,
         auditLogs,
@@ -1198,6 +1359,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         rejectJoinRequest,
         createFriendInvitation,
         fetchGroupInvitations,
+        cancelGroupInvitation,
+        searchCpaUsers,
         submitWithdrawalRequest,
         approveWithdrawalRequest,
         rejectWithdrawalRequest,

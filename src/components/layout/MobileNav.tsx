@@ -84,6 +84,7 @@ export const MobileNav: React.FC = () => {
               </button>
 
               <button
+                id="btn-mobile-quick-add-members"
                 onClick={() => handleAction('invite-friends')}
                 className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-800/60 p-3 text-left hover:bg-slate-800"
               >

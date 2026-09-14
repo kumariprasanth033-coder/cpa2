@@ -352,8 +352,8 @@ export const OverviewDashboard: React.FC = () => {
 
                   <div className="mt-3 flex gap-2">
                     <button
-                      onClick={() => {
-                        const res = approveWithdrawalRequest(apr.id);
+                      onClick={async () => {
+                        const res = await approveWithdrawalRequest(apr.id);
                         if (!res.success) alert(res.message);
                       }}
                       className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-amber-600 hover:bg-amber-500 py-1.5 text-xs font-bold text-white transition-colors cursor-pointer"

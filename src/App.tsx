@@ -1,5 +1,6 @@
 import React from 'react';
 import { AppProvider, useApp } from './context/AppContext';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { MobileNav } from './components/layout/MobileNav';
@@ -21,9 +22,23 @@ import { SettingsView } from './components/views/SettingsView';
 import { TrustCenter } from './components/trust/TrustCenter';
 import { LoginPage } from './components/auth/LoginPage';
 import { AdminDashboard } from './components/admin/AdminDashboard';
+import { JoinInviteView } from './components/views/JoinInviteView';
 
 const MainContent: React.FC = () => {
-  const { activeTab, isLoggedIn } = useApp();
+  const { activeTab, isLoggedIn, isAuthLoading } = useApp();
+
+  if (isAuthLoading) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center min-h-[60vh] gap-3 text-slate-400">
+        <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm font-medium tracking-wide">Loading CPA...</p>
+      </div>
+    );
+  }
+
+  if (window.location.pathname.startsWith('/join/')) {
+    return <JoinInviteView />;
+  }
 
   if (!isLoggedIn || activeTab === 'login') {
     return <LoginPage />;
@@ -40,26 +55,45 @@ const MainContent: React.FC = () => {
 
   return (
     <div className="flex-1 overflow-y-auto pb-24 md:pb-10">
-      {activeTab === 'dashboard' && <OverviewDashboard />}
-      {activeTab === 'groups' && <GroupsView />}
-      {(activeTab === 'my-cpa' || activeTab === 'personal-cpa') && <PersonalCPAView />}
-      {activeTab === 'messages' && <MessagesView />}
-      {activeTab === 'split-expense' && <SplitExpenseView />}
-      {activeTab === 'collections' && <CollectionsView />}
-      {activeTab === 'goals' && <GoalsView />}
-      {activeTab === 'transactions' && <TransactionsView />}
-      {activeTab === 'approvals' && <ApprovalsView />}
-      {activeTab === 'ai-manager' && <AIManagerView />}
-      {activeTab === 'notifications' && <NotificationsView />}
-      {activeTab === 'profile' && <ProfileView />}
-      {activeTab === 'settings' && <SettingsView />}
-      {activeTab === 'trust-center' && <TrustCenter />}
+      <ErrorBoundary>
+        {activeTab === 'dashboard' && <OverviewDashboard />}
+        {activeTab === 'groups' && <GroupsView />}
+        {(activeTab === 'my-cpa' || activeTab === 'personal-cpa') && <PersonalCPAView />}
+        {activeTab === 'messages' && <MessagesView />}
+        {activeTab === 'split-expense' && <SplitExpenseView />}
+        {activeTab === 'collections' && <CollectionsView />}
+        {activeTab === 'goals' && <GoalsView />}
+        {activeTab === 'transactions' && <TransactionsView />}
+        {activeTab === 'approvals' && <ApprovalsView />}
+        {activeTab === 'ai-manager' && <AIManagerView />}
+        {activeTab === 'notifications' && <NotificationsView />}
+        {activeTab === 'profile' && <ProfileView />}
+        {activeTab === 'settings' && <SettingsView />}
+        {activeTab === 'trust-center' && <TrustCenter />}
+      </ErrorBoundary>
     </div>
   );
 };
 
 const AppShell: React.FC = () => {
-  const { isLoggedIn, activeTab } = useApp();
+  const { isLoggedIn, isAuthLoading, activeTab } = useApp();
+
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center font-sans gap-3">
+        <div className="w-10 h-10 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-base font-medium tracking-wide text-slate-300">Loading CPA...</p>
+      </div>
+    );
+  }
+
+  if (window.location.pathname.startsWith('/join/')) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
+        <JoinInviteView />
+      </div>
+    );
+  }
 
   if (!isLoggedIn || activeTab === 'login') {
     return <LoginPage />;
@@ -84,8 +118,10 @@ const AppShell: React.FC = () => {
 
 export default function App() {
   return (
-    <AppProvider>
-      <AppShell />
-    </AppProvider>
+    <ErrorBoundary>
+      <AppProvider>
+        <AppShell />
+      </AppProvider>
+    </ErrorBoundary>
   );
 }
