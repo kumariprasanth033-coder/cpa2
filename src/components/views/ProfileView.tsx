@@ -43,6 +43,30 @@ export const ProfileView: React.FC = () => {
   const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
   const [maskedRecipient, setMaskedRecipient] = useState<string>('');
   const [phoneFeedback, setPhoneFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [otpProviderStatus, setOtpProviderStatus] = useState<{
+    smsConfigured: boolean;
+    whatsappConfigured: boolean;
+    senderPhone: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    fetch('/api/auth/otp/status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data && data.success) {
+          setOtpProviderStatus({
+            smsConfigured: Boolean(data.smsConfigured),
+            whatsappConfigured: Boolean(data.whatsappConfigured),
+            senderPhone: data.senderPhone || null,
+          });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (cooldownRemaining <= 0) return;
@@ -85,6 +109,16 @@ export const ProfileView: React.FC = () => {
       setPhoneFeedback({ type: 'error', message: 'Please enter a valid 10-digit Indian mobile number.' });
       return;
     }
+
+    if (otpChannel === 'whatsapp' && otpProviderStatus && !otpProviderStatus.whatsappConfigured) {
+      setPhoneFeedback({ type: 'error', message: 'WhatsApp verification requires configuration.' });
+      return;
+    }
+    if (otpChannel === 'sms' && otpProviderStatus && !otpProviderStatus.smsConfigured) {
+      setPhoneFeedback({ type: 'error', message: 'SMS service requires configuration.' });
+      return;
+    }
+
     setIsSendingOtp(true);
     setPhoneFeedback(null);
     try {
@@ -95,15 +129,13 @@ export const ProfileView: React.FC = () => {
         if (res.maskedPhone) setMaskedRecipient(res.maskedPhone);
         setPhoneFeedback({
           type: 'success',
-          message: res.message
-            ? `${res.message} via ${otpChannel === 'whatsapp' ? 'WhatsApp' : 'SMS'}`
-            : `Verification code sent via ${otpChannel === 'whatsapp' ? 'WhatsApp' : 'SMS'}.`,
+          message: 'OTP sent successfully',
         });
       } else {
         if (res.cooldownRemainingSec) {
           setCooldownRemaining(res.cooldownRemainingSec);
         }
-        setPhoneFeedback({ type: 'error', message: res.error || 'Failed to send OTP.' });
+        setPhoneFeedback({ type: 'error', message: res.error || 'Unable to send OTP' });
       }
     } finally {
       setIsSendingOtp(false);
@@ -301,7 +333,13 @@ export const ProfileView: React.FC = () => {
           <span className="text-xs font-medium text-slate-400">Delivery Channel:</span>
           <button
             type="button"
-            onClick={() => setOtpChannel('sms')}
+            onClick={() => {
+              setOtpChannel('sms');
+              setPhoneFeedback(null);
+              if (otpProviderStatus && !otpProviderStatus.smsConfigured) {
+                setPhoneFeedback({ type: 'error', message: 'SMS service requires configuration.' });
+              }
+            }}
             className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
               otpChannel === 'sms'
                 ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
@@ -313,7 +351,13 @@ export const ProfileView: React.FC = () => {
           </button>
           <button
             type="button"
-            onClick={() => setOtpChannel('whatsapp')}
+            onClick={() => {
+              setOtpChannel('whatsapp');
+              setPhoneFeedback(null);
+              if (otpProviderStatus && !otpProviderStatus.whatsappConfigured) {
+                setPhoneFeedback({ type: 'error', message: 'WhatsApp verification requires configuration.' });
+              }
+            }}
             className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
               otpChannel === 'whatsapp'
                 ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'

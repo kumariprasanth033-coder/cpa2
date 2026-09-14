@@ -75,6 +75,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
   }
 
+  // Rewrite legacy or prefixed /api/cpa/auth/* routes directly to canonical /api/auth/*
+  if (req.url && req.url.startsWith('/api/cpa/auth/')) {
+    req.url = req.url.replace('/api/cpa/auth/', '/api/auth/');
+  }
+
   next();
 });
 
@@ -634,22 +639,30 @@ app.post('/api/auth/update-profile', authenticateToken, (req: AuthenticatedReque
 // ==========================================
 
 // Check OTP Provider Status (SMS & WhatsApp)
-app.get(['/api/auth/otp/status', '/api/auth/phone/status'], (_req: Request, res: Response) => {
-  const twilio = getTwilioConfig();
-  return res.json({
-    success: true,
-    smsConfigured: twilio.isSmsConfigured,
-    whatsappConfigured: twilio.isWhatsAppConfigured,
-    senderPhone: twilio.isSmsConfigured ? twilio.phoneNumber : null,
-  });
-});
+app.get(
+  ['/api/auth/otp/status', '/api/auth/phone/status', '/api/cpa/auth/otp/status', '/api/cpa/auth/status', '/api/cpa/auth/phone/status'],
+  (_req: Request, res: Response) => {
+    const twilio = getTwilioConfig();
+    return res.json({
+      success: true,
+      smsConfigured: twilio.isSmsConfigured,
+      whatsappConfigured: twilio.isWhatsAppConfigured,
+      senderPhone: twilio.isSmsConfigured ? twilio.phoneNumber : null,
+    });
+  }
+);
 
 // Send Real OTP (SMS or WhatsApp via Twilio)
-app.post(['/api/auth/send-otp', '/api/auth/phone/send-otp'], optionalAuthToken, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { phone, channel = 'sms' } = req.body;
-    const targetPhone = phone || req.user?.phone;
-    const requestedChannel = String(channel).toLowerCase() === 'whatsapp' ? 'whatsapp' : 'sms';
+app.post(
+  ['/api/auth/send-otp', '/api/cpa/auth/send-otp', '/api/auth/phone/send-otp', '/api/cpa/auth/phone/send-otp'],
+  optionalAuthToken,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const body = req.body || {};
+      const { channel = 'sms' } = body;
+      const phone = body.phone || req.query?.phone;
+      const targetPhone = phone || req.user?.phone;
+      const requestedChannel = String(channel).toLowerCase() === 'whatsapp' ? 'whatsapp' : 'sms';
 
     if (!targetPhone) {
       return res.status(400).json({ success: false, error: 'Mobile number is required to send verification code.' });
@@ -754,10 +767,15 @@ app.post(['/api/auth/send-otp', '/api/auth/phone/send-otp'], optionalAuthToken, 
 });
 
 // Verify Real OTP
-app.post(['/api/auth/verify-otp', '/api/auth/phone/verify-otp'], optionalAuthToken, (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { phone, otp } = req.body;
-    const targetPhone = phone || req.user?.phone;
+app.post(
+  ['/api/auth/verify-otp', '/api/cpa/auth/verify-otp', '/api/auth/phone/verify-otp', '/api/cpa/auth/phone/verify-otp'],
+  optionalAuthToken,
+  (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const body = req.body || {};
+      const phone = body.phone || req.query?.phone;
+      const otp = body.otp || req.query?.otp;
+      const targetPhone = phone || req.user?.phone;
 
     if (!targetPhone || !otp) {
       return res.status(400).json({ success: false, error: 'Phone number and 6-digit OTP code are required.' });
@@ -2004,10 +2022,28 @@ function getResolvedPaymentGateway() {
     }
   }
 
+  const missingVars: string[] = [];
+  if (mode === 'test') {
+    if (!keyId) missingVars.push('RAZORPAY_TEST_KEY_ID');
+    if (!keySecret) missingVars.push('RAZORPAY_TEST_KEY_SECRET');
+  } else {
+    if (!keyId) missingVars.push('RAZORPAY_LIVE_KEY_ID');
+    if (!keySecret) missingVars.push('RAZORPAY_LIVE_KEY_SECRET');
+  }
+
+  // Actively test Razorpay constructor initialization if credentials exist
+  if (keyId && keySecret && !configurationError) {
+    try {
+      new Razorpay({ key_id: keyId, key_secret: keySecret });
+    } catch (rzpInitErr: any) {
+      configurationError = `Razorpay initialization failed: ${rzpInitErr?.message || 'Invalid key or secret credentials'}`;
+    }
+  }
+
   const isConfigured = Boolean(keyId && keySecret && !configurationError);
   const status: 'CONNECTED' | 'NOT_CONFIGURED' | 'ERROR' = isConfigured
     ? 'CONNECTED'
-    : configurationError && configurationError.includes('Mismatch')
+    : configurationError && (configurationError.includes('Mismatch') || configurationError.includes('initialization') || configurationError.includes('Invalid'))
       ? 'ERROR'
       : 'NOT_CONFIGURED';
 
@@ -2020,6 +2056,7 @@ function getResolvedPaymentGateway() {
     webhookSecret,
     status,
     configurationError,
+    missingVars,
     keySource,
   };
 }
@@ -2290,6 +2327,7 @@ app.get('/api/payments/status', (req: Request, res: Response) => {
   const appUrl = getPublicAppUrl(req);
 
   return res.json({
+    success: true,
     configured: gateway.isConfigured,
     mode: gateway.mode.toLowerCase(),
     provider: 'razorpay',
@@ -2297,7 +2335,8 @@ app.get('/api/payments/status', (req: Request, res: Response) => {
     status: gateway.status,
     message: gateway.isConfigured
       ? `Razorpay ${gateway.mode} Gateway Connected`
-      : 'Payment service requires configuration.',
+      : gateway.configurationError || 'Payment service requires configuration.',
+    missingVars: gateway.isConfigured ? [] : gateway.missingVars,
     webhookUrl: `${appUrl}/api/payments/webhook`,
   });
 });
@@ -4183,6 +4222,28 @@ function validateStartupConfiguration() {
 }
 
 // ==========================================
+// 10c. EXPLICIT API ROOT & 404 JSON HANDLER
+// ==========================================
+
+// API root health check
+app.get('/api', (req: Request, res: Response) => {
+  return res.json({
+    success: true,
+    service: 'CPA API',
+    status: 'online',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Explicit API 404 handler - ensures ANY unmatched /api/* call ALWAYS returns JSON, never HTML
+app.all('/api/*', (req: Request, res: Response) => {
+  return res.status(404).json({
+    success: false,
+    error: `API route not found: ${req.method} ${req.originalUrl || req.url}`,
+  });
+});
+
+// ==========================================
 // 11. VITE INTEGRATION / STATIC SPA SERVING
 // ==========================================
 
@@ -4200,6 +4261,9 @@ async function startServer() {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req: Request, res: Response) => {
+      if (req.path.startsWith('/api') || req.url.startsWith('/api')) {
+        return res.status(404).json({ success: false, error: `API route not found: ${req.method} ${req.url}` });
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

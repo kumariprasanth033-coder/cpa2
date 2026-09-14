@@ -2,6 +2,10 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/api/cpa/auth/(.*)",
+      "destination": "/api/auth/$1"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },
