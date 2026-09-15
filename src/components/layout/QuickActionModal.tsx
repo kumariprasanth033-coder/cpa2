@@ -63,6 +63,7 @@ export const QuickActionModal: React.FC = () => {
     currentUser,
     paymentMode,
     payoutDestinations,
+    members,
   } = useApp();
 
   // Create Group Form State
@@ -91,7 +92,7 @@ export const QuickActionModal: React.FC = () => {
   const [copiedInviteLink, setCopiedInviteLink] = useState(false);
 
   // Add Members Tabbed Experience
-  const [memberAddTab, setMemberAddTab] = useState<'search' | 'phone' | 'share' | 'invitations'>('search');
+  const [memberAddTab, setMemberAddTab] = useState<'search' | 'phone' | 'share' | 'members' | 'invitations'>('search');
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [userSearchResults, setUserSearchResults] = useState<any[]>([]);
   const [isSearchingUsers, setIsSearchingUsers] = useState(false);
@@ -896,77 +897,148 @@ export const QuickActionModal: React.FC = () => {
           )}
 
           {/* ADD MEMBERS VIEW (Either from post-creation or direct quick action) */}
-          {(quickActionModal === 'invite-friends' || (quickActionModal === 'create-group' && createdGroupView === 'INVITE_FRIENDS')) && (
-            <div className="space-y-4 text-xs">
-              {/* Target Group Banner */}
-              <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Target Group</span>
-                  <div className="font-bold text-white text-sm">{(createdGroupData || activeGroup)?.name || 'Centralized Pocket Account'}</div>
-                </div>
-                <div className="text-right">
-                  <span className="font-mono text-xs text-emerald-400 bg-slate-900 border border-slate-800 px-2 py-1 rounded">
-                    {(createdGroupData || activeGroup)?.cpaNumber}
-                  </span>
-                  <div className="text-[10px] text-slate-400 mt-0.5">{(createdGroupData || activeGroup)?.purpose}</div>
-                </div>
-              </div>
+          {(quickActionModal === 'invite-friends' || (quickActionModal === 'create-group' && createdGroupView === 'INVITE_FRIENDS')) && (() => {
+            const targetGroup = createdGroupData || activeGroup || (groups && groups.length > 0 ? groups[0] : null);
+            const currentGroupMembers = (members || []).filter((m) => m.groupId === targetGroup?.id);
 
-              {/* Subtabs for Adding Members */}
-              <div className="flex border-b border-slate-800 pb-1 gap-1 overflow-x-auto">
-                <button
-                  type="button"
-                  id="tab-search-cpa-users"
-                  onClick={() => setMemberAddTab('search')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                    memberAddTab === 'search'
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <Search className="h-3.5 w-3.5" />
-                  <span>Search CPA Users</span>
-                </button>
-                <button
-                  type="button"
-                  id="tab-invite-by-mobile"
-                  onClick={() => setMemberAddTab('phone')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                    memberAddTab === 'phone'
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <Phone className="h-3.5 w-3.5" />
-                  <span>Invite by Mobile</span>
-                </button>
-                <button
-                  type="button"
-                  id="tab-share-and-qr"
-                  onClick={() => setMemberAddTab('share')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                    memberAddTab === 'share'
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <QrCode className="h-3.5 w-3.5" />
-                  <span>Share & QR</span>
-                </button>
-                <button
-                  type="button"
-                  id="tab-modal-invites"
-                  onClick={() => setMemberAddTab('invitations')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                    memberAddTab === 'invitations'
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <Clock className="h-3.5 w-3.5" />
-                  <span>Sent Invites ({modalInvitations.length})</span>
-                </button>
-              </div>
+            if (!targetGroup) {
+              return (
+                <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 text-center space-y-3 my-4">
+                  <div className="h-12 w-12 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto">
+                    <Users className="h-6 w-6" />
+                  </div>
+                  <h4 className="font-bold text-white text-base">No Group Pocket Yet</h4>
+                  <p className="text-slate-400 text-xs max-w-sm mx-auto">
+                    You need an active Group CPA pocket to add friends and members. Create your group in just a few seconds!
+                  </p>
+                  <button
+                    type="button"
+                    id="btn-create-first-group-cpa"
+                    onClick={() => {
+                      setCreatedGroupView(null);
+                      setQuickActionModal('create-group');
+                    }}
+                    className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-emerald-600/20 hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer"
+                  >
+                    <PlusCircle className="h-4 w-4" />
+                    <span>Create Group CPA First</span>
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-4 text-xs">
+                {/* Target Group Banner with Switcher */}
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Target Group Pocket</span>
+                      <div className="font-bold text-white text-sm">{targetGroup.name}</div>
+                    </div>
+                    <div className="text-right">
+                      <span className="font-mono text-xs text-emerald-400 bg-slate-900 border border-slate-800 px-2 py-1 rounded">
+                        {targetGroup.cpaNumber}
+                      </span>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{targetGroup.purpose}</div>
+                    </div>
+                  </div>
+
+                  {groups && groups.length > 1 && (
+                    <div className="flex items-center gap-2 pt-1.5 border-t border-slate-800/80">
+                      <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">Switch Group:</span>
+                      <select
+                        id="select-invite-target-group"
+                        value={targetGroup.id}
+                        onChange={(e) => {
+                          const selected = groups.find((g) => g.id === e.target.value);
+                          if (selected) {
+                            setSelectedGroupId(selected.id);
+                            setCreatedGroupData(null);
+                            generateGroupQrs(selected);
+                            fetchGroupInvitations(selected.id).then((res) => setModalInvitations(res || []));
+                          }
+                        }}
+                        className="flex-1 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none cursor-pointer"
+                      >
+                        {groups.map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.name} ({g.cpaNumber}) - {g.purpose}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {/* Subtabs for Adding Members */}
+                <div className="flex border-b border-slate-800 pb-1 gap-1 overflow-x-auto">
+                  <button
+                    type="button"
+                    id="tab-search-cpa-users"
+                    onClick={() => setMemberAddTab('search')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      memberAddTab === 'search'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                    <span>Search CPA Users</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="tab-invite-by-mobile"
+                    onClick={() => setMemberAddTab('phone')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      memberAddTab === 'phone'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Phone className="h-3.5 w-3.5" />
+                    <span>Invite by Mobile</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="tab-share-and-qr"
+                    onClick={() => setMemberAddTab('share')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      memberAddTab === 'share'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <QrCode className="h-3.5 w-3.5" />
+                    <span>Share & QR</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="tab-current-members"
+                    onClick={() => setMemberAddTab('members')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      memberAddTab === 'members'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <UserCheck className="h-3.5 w-3.5" />
+                    <span>Group Members ({currentGroupMembers.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="tab-modal-invites"
+                    onClick={() => setMemberAddTab('invitations')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      memberAddTab === 'invitations'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Clock className="h-3.5 w-3.5" />
+                    <span>Sent Invites ({modalInvitations.length})</span>
+                  </button>
+                </div>
 
               {/* TAB 1: SEARCH CPA USERS */}
               {memberAddTab === 'search' && (
@@ -1278,6 +1350,97 @@ export const QuickActionModal: React.FC = () => {
                 </div>
               )}
 
+              {/* TAB 5: CURRENT MEMBERS */}
+              {memberAddTab === 'members' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-300">
+                      Active Pocket Members ({currentGroupMembers.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setMemberAddTab('phone')}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                    >
+                      <UserPlus className="h-3 w-3" />
+                      <span>+ Invite Friend</span>
+                    </button>
+                  </div>
+
+                  {currentGroupMembers.length === 0 ? (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-center text-slate-400">
+                      <p className="font-semibold text-white">No members yet</p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Use the Search or Mobile tabs above to add friends to this pocket!
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setMemberAddTab('phone')}
+                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white transition-colors cursor-pointer"
+                      >
+                        <UserPlus className="h-3.5 w-3.5" />
+                        <span>Invite by Mobile Now</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                      {currentGroupMembers.map((m) => {
+                        const isLeader = m.role === 'OWNER' || m.role === 'ADMIN';
+                        const isSelf = m.userId === currentUser.id;
+                        const displayName = m.user?.fullName || 'Group Member';
+                        const displayContact = m.user?.phone || m.user?.email || 'Verified Account';
+                        return (
+                          <div
+                            key={m.id}
+                            className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800 bg-slate-950/70 hover:border-slate-700 transition-all"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              {m.user?.avatarUrl ? (
+                                <img
+                                  src={m.user.avatarUrl}
+                                  alt={displayName}
+                                  className="h-8 w-8 rounded-full object-cover border border-slate-700"
+                                />
+                              ) : (
+                                <div className="h-8 w-8 rounded-full bg-slate-800 text-slate-200 font-bold flex items-center justify-center text-xs border border-slate-700">
+                                  {displayName.charAt(0)}
+                                </div>
+                              )}
+                              <div>
+                                <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                                  <span>{displayName}</span>
+                                  {isSelf && (
+                                    <span className="text-[10px] text-emerald-400 font-normal">(You)</span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-400 flex items-center gap-2">
+                                  <span>{displayContact}</span>
+                                  {m.joinedAt && (
+                                    <span>• Joined {new Date(m.joinedAt).toLocaleDateString()}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`rounded px-2 py-0.5 text-[10px] font-bold ${
+                                  isLeader
+                                    ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                                    : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                }`}
+                              >
+                                {m.role}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Real Invitation Result Card */}
               {invitationResult && (
                 <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3.5 space-y-2">
@@ -1356,7 +1519,8 @@ export const QuickActionModal: React.FC = () => {
                 </button>
               </div>
             </div>
-          )}
+          );
+        })()}
 
           {/* CONTRIBUTE MODAL */}
           {quickActionModal === 'contribute' && (

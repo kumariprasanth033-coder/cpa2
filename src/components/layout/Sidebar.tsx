@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   WalletCards,
   Users,
+  UserPlus,
   MessageSquare,
   Receipt,
   PieChart,
@@ -22,7 +23,7 @@ import {
 } from 'lucide-react';
 
 interface NavItem {
-  id: MainNavTab;
+  id: MainNavTab | 'friends';
   label: string;
   icon: React.ElementType;
   badge?: string | number;
@@ -39,6 +40,7 @@ export const Sidebar: React.FC = () => {
     setQuickActionModal,
     activeGroup,
     currentUser,
+    members,
   } = useApp();
 
   const pendingApprovalsCount = approvalRequests.filter((r) => r.status === 'PENDING').length;
@@ -58,6 +60,13 @@ export const Sidebar: React.FC = () => {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'my-cpa', label: 'My CPA', icon: WalletCards },
     { id: 'groups', label: 'Groups', icon: Users, badge: activeGroup ? '1 Active' : undefined },
+    {
+      id: 'friends',
+      label: 'Add Friends',
+      icon: UserPlus,
+      badge: members.length > 0 ? `${members.length} Members` : '+ Add',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+    },
     { id: 'messages', label: 'Messages', icon: MessageSquare, badge: chatMessages.length > 0 ? 'Live' : undefined, badgeColor: 'bg-emerald-500/20 text-emerald-300' },
     { id: 'transactions', label: 'Transactions', icon: Receipt },
     { id: 'split-expense', label: 'Split Expense', icon: PieChart },
@@ -81,9 +90,20 @@ export const Sidebar: React.FC = () => {
             <span className="font-mono text-[10px]">{activeGroup.cpaNumber}</span>
           </div>
           <div className="mt-1 font-bold text-sm text-slate-100 truncate">{activeGroup.name}</div>
-          <div className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-400">
-            <Lock className="h-3 w-3 text-emerald-400" />
-            <span>Leader Approval Enforced</span>
+          <div className="mt-2.5 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+              <Lock className="h-3 w-3 text-emerald-400" />
+              <span>Leader Approval</span>
+            </div>
+            <button
+              id="btn-sidebar-active-add-member"
+              onClick={() => setQuickActionModal('invite-friends')}
+              title="Add Friends to this Group"
+              className="flex items-center gap-1 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-bold text-emerald-300 transition-colors cursor-pointer"
+            >
+              <UserPlus className="h-3 w-3" />
+              <span>+ Add</span>
+            </button>
           </div>
         </div>
       )}
@@ -96,8 +116,15 @@ export const Sidebar: React.FC = () => {
           return (
             <button
               key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
+              id={`nav-item-${item.id}`}
+              onClick={() => {
+                if (item.id === 'friends') {
+                  setQuickActionModal('invite-friends');
+                } else {
+                  setActiveTab(item.id as MainNavTab);
+                }
+              }}
+              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold transition-all cursor-pointer ${
                 isActive
                   ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm'
                   : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
@@ -121,17 +148,28 @@ export const Sidebar: React.FC = () => {
         })}
       </nav>
 
-      {/* Floating Action Trigger in Sidebar */}
+      {/* Action Triggers in Sidebar */}
       <div className="mt-4 border-t border-slate-800/80 pt-4 space-y-2">
         <button
-          onClick={() => setQuickActionModal('create-group')}
+          id="btn-sidebar-add-friends"
+          onClick={() => setQuickActionModal('invite-friends')}
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3 py-2.5 text-xs font-bold text-white shadow-lg shadow-emerald-600/20 hover:from-emerald-500 hover:to-teal-500 transition-all cursor-pointer"
         >
-          <PlusCircle className="h-4 w-4" />
+          <UserPlus className="h-4 w-4" />
+          <span>Add Friends</span>
+        </button>
+
+        <button
+          id="btn-sidebar-create-group"
+          onClick={() => setQuickActionModal('create-group')}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 hover:border-slate-700 hover:text-white transition-all cursor-pointer"
+        >
+          <PlusCircle className="h-4 w-4 text-emerald-400" />
           <span>New Group CPA</span>
         </button>
 
         <button
+          id="btn-sidebar-scan-qr"
           onClick={() => setQuickActionModal('scan-qr')}
           className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 hover:border-slate-700 hover:text-white transition-all cursor-pointer"
         >
