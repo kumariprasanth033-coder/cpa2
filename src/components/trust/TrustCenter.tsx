@@ -11,7 +11,9 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Fingerprint,
 } from 'lucide-react';
+import { BiometricSecurityCard } from './BiometricSecurityCard';
 
 export const TrustCenter: React.FC = () => {
   const { setActiveTab } = useApp();
@@ -60,7 +62,21 @@ export const TrustCenter: React.FC = () => {
       ],
     },
     {
-      title: '4. QR Code Security & Anti-Replay Tokens',
+      title: '4. Biometric Authentication & WebAuthn / Passkeys',
+      icon: Fingerprint,
+      color: 'text-teal-400',
+      bgColor: 'bg-teal-500/10',
+      borderColor: 'border-teal-500/20',
+      description:
+        'CPA integrates W3C Web Authentication API (FIDO2 Passkeys) allowing hardware-bound biometric authentication (Touch ID, Face ID, Windows Hello). Sensitive operations like high-value withdrawals, multi-sig signoffs, emergency account freezes, and ledger exports require cryptographic biometric verification.',
+      guarantees: [
+        'Hardware-bound ECDSA SHA-256 cryptographic signatures',
+        'Zero passwords or biometric raw data sent over network',
+        'Fallback simulated biometric sandbox for restricted iframes',
+      ],
+    },
+    {
+      title: '5. QR Code Security & Anti-Replay Tokens',
       icon: QrCode,
       color: 'text-teal-400',
       bgColor: 'bg-teal-500/10',
@@ -74,7 +90,7 @@ export const TrustCenter: React.FC = () => {
       ],
     },
     {
-      title: '5. Balance Maintenance & Double-Entry Ledger',
+      title: '6. Balance Maintenance & Double-Entry Ledger',
       icon: Wallet,
       color: 'text-indigo-400',
       bgColor: 'bg-indigo-500/10',
@@ -88,7 +104,7 @@ export const TrustCenter: React.FC = () => {
       ],
     },
     {
-      title: '6. AI Behavior & Zero-Execution Boundaries',
+      title: '7. AI Behavior & Zero-Execution Boundaries',
       icon: Sparkles,
       color: 'text-purple-400',
       bgColor: 'bg-purple-500/10',
@@ -102,7 +118,7 @@ export const TrustCenter: React.FC = () => {
       ],
     },
     {
-      title: '7. Immutable Audit Logs & Traceability',
+      title: '8. Immutable Audit Logs & Traceability',
       icon: Receipt,
       color: 'text-emerald-400',
       bgColor: 'bg-emerald-500/10',
@@ -116,7 +132,7 @@ export const TrustCenter: React.FC = () => {
       ],
     },
     {
-      title: '8. Suspicious Activity Reporting & Moderation',
+      title: '9. Suspicious Activity Reporting & Moderation',
       icon: AlertTriangle,
       color: 'text-rose-400',
       bgColor: 'bg-rose-500/10',
@@ -132,9 +148,9 @@ export const TrustCenter: React.FC = () => {
   ];
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+    <div className="max-w-5xl mx-auto px-4 py-8 sm:px-6 lg:px-8 space-y-8">
       {/* Header */}
-      <div className="mb-8">
+      <div>
         <button
           onClick={() => setActiveTab('dashboard')}
           className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors mb-4"
@@ -156,8 +172,14 @@ export const TrustCenter: React.FC = () => {
         </div>
       </div>
 
+      {/* Interactive Biometric Security & WebAuthn Passkeys Layer */}
+      <BiometricSecurityCard />
+
       {/* Pillars Grid */}
       <div className="space-y-6">
+        <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">
+          Core Security & Governance Architecture
+        </h2>
         {securityPillars.map((pillar, idx) => {
           const Icon = pillar.icon;
           return (

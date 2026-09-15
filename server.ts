@@ -88,6 +88,19 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// Handle pre-parsed JSON bodies from Vercel / serverless runtimes
+app.use((req: any, _res, next) => {
+  if (req.body && typeof req.body === 'object' && !req._body) {
+    req._body = true;
+    if (!req.rawBody) {
+      try {
+        req.rawBody = Buffer.from(JSON.stringify(req.body));
+      } catch {}
+    }
+  }
+  next();
+});
+
 app.use(
   express.json({
     verify: (req: any, _res, buf) => {
@@ -2664,7 +2677,7 @@ function executeAuthoritativePaymentCapture(params: {
 }
 
 // 1. Get payment gateway configuration status (Safe status endpoint per Section 6)
-app.get('/api/payments/status', (req: Request, res: Response) => {
+const handlePaymentStatus = (req: Request, res: Response) => {
   const gateway = getResolvedPaymentGateway();
   const appUrl = getPublicAppUrl(req);
 
@@ -2681,7 +2694,10 @@ app.get('/api/payments/status', (req: Request, res: Response) => {
     missingVars: gateway.isConfigured ? [] : gateway.missingVars,
     webhookUrl: `${appUrl}/api/payments/webhook`,
   });
-});
+};
+
+app.get('/api/payments/status', handlePaymentStatus);
+app.get('/api/payments', handlePaymentStatus);
 
 // Legacy / Detailed config endpoint (Safe - never exposes private secrets)
 app.get('/api/payments/config', (req: Request, res: Response) => {
